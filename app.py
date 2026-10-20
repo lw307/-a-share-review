@@ -192,37 +192,24 @@ def fetch_indices():
 
             )
 
- except Exception as exc:
+    except Exception as exc:
+        error_detail = str(exc).replace("\n", " ")[:200]
 
-    error_detail = str(exc).replace("\n", " ")[:200]
+        with cache_lock:
+            market_cache["indices"] = unavailable(
+                "指数获取失败："
+                + type(exc).__name__
+                + "；详情："
+                + error_detail
+            )
+            market_cache["status"] = "unavailable"
+            market_cache["updated_at"] = current_time()
+            market_cache["message"] = (
+                "指数行情获取失败，请检查数据源连接。"
+            )
 
-    with cache_lock:
-
-        market_cache["indices"] = unavailable(
-
-            "指数获取失败："
-
-            + type(exc).__name__
-
-            + "；详情："
-
-            + error_detail
-
-        )
-
-        market_cache["status"] = "unavailable"
-
-        market_cache["updated_at"] = current_time()
-
-        market_cache["message"] = (
-
-            "指数行情获取失败，请检查数据源连接。"
-
-        
     finally:
-
         fetch_running = False
-
         fetch_lock.release()
 
 def start_background_fetch():
