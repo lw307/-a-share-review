@@ -368,6 +368,16 @@ def index():
 
     return send_from_directory(".", "index.html")
 
+@app.get("/api/version")
+def version_info():
+    import akshare as ak
+
+    return jsonify({
+        "app_version": APP_VERSION,
+        "akshare_version": ak.__version__,
+        "time": current_time()
+    })
+
 @app.get("/api/health")
 
 def health():
