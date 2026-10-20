@@ -128,7 +128,7 @@ def fetch_indices():
 
         import akshare as ak
 
-                try:
+        try:
             df = ak.stock_zh_index_spot_em()
         except Exception as em_exc:
             try:
