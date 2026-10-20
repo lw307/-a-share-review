@@ -230,38 +230,29 @@ def fetch_indices():
         fetch_lock.release()
 
 def start_background_fetch():
-
     """
-
     控制请求频率，避免每次打开网页都请求外部数据。
-
     """
-
     global last_attempt
 
     now = datetime.now(TZ).timestamp()
 
     with cache_lock:
-
         indices_ready = market_cache["indices"]["status"] == "ok"
 
     if indices_ready and now - last_attempt < 600:
-
         return
 
     if now - last_attempt < 60:
-
         return
 
+    last_attempt = now
+
     thread = threading.Thread(
-
         target=fetch_indices,
-
         daemon=True
-
     )
-
-thread.start()
+    thread.start()
 
 def fetch_sectors():
     # Fetch industry sector list using Tonghuashun
