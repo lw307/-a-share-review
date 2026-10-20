@@ -269,68 +269,78 @@ def fetch_sectors():
 
     if not sector_lock.acquire(blocking=False):
         return
-try:
-    last_sector_attempt = datetime.now(TZ).timestamp()
-    import akshare as ak
-    result = {
-        "industry": [],
-        "concept": []
-    }
-    errors = []
-    # 优先使用已验证可用的同花顺行业板块接口
+
     try:
-        df = ak.stock_board_industry_name_ths()
-        if df is None or df.empty:
-            raise ValueError("同花顺没有返回有效行业板块数据")
-        result["industry"] = json.loads(
-            df.to_json(
-                orient="records",
-                force_ascii=False
-            )
-        )
-    except Exception as exc:
-        errors.append(
-            "同花顺行业板块: "
-            + type(exc).__name__
-            + ": "
-            + str(exc)[:120]
-        )
-    available = [
-        key for key in ("industry", "concept")
-        if result[key]
-    ]
-    with cache_lock:
-        if available:
-            market_cache["sectors"] = {
-                "status": "partial",
-                "data": result,
-                "message": (
-                    "已获取同花顺行业板块列表；"
-                    "板块实时行情和概念板块数据尚未完成接入"
+        last_sector_attempt = datetime.now(TZ).timestamp()
+        import akshare as ak
+
+        result = {
+            "industry": [],
+            "concept": []
+        }
+        errors = []
+
+        # 优先使用已验证可用的同花顺行业板块接口
+        try:
+            df = ak.stock_board_industry_name_ths()
+
+            if df is None or df.empty:
+                raise ValueError("同花顺没有返回有效行业板块数据")
+
+            result["industry"] = json.loads(
+                df.to_json(
+                    orient="records",
+                    force_ascii=False
                 )
-            }
-        else:
-            market_cache["sectors"] = {
-                "status": "unavailable",
-                "data": None,
-                "message": "板块获取失败：" + "；".join(errors)
-            }
-        market_cache["updated_at"] = current_time()
-except Exception as exc:
-    with cache_lock:
-        market_cache["sectors"] = {
-            "status": "unavailable",
-            "data": None,
-            "message": (
-                "板块处理失败："
+            )
+
+        except Exception as exc:
+            errors.append(
+                "同花顺行业板块: "
                 + type(exc).__name__
                 + ": "
                 + str(exc)[:120]
             )
-        }
-finally:
-    sector_lock.release()
 
+        available = [
+            key for key in ("industry", "concept")
+            if result[key]
+        ]
+
+        with cache_lock:
+            if available:
+                market_cache["sectors"] = {
+                    "status": "partial",
+                    "data": result,
+                    "message": (
+                        "已获取同花顺行业板块列表；"
+                        "板块实时行情和概念板块数据尚未完成接入"
+                    )
+                }
+            else:
+                market_cache["sectors"] = {
+                    "status": "unavailable",
+                    "data": None,
+                    "message": "板块获取失败：" + "；".join(errors)
+                }
+
+            market_cache["updated_at"] = current_time()
+
+    except Exception as exc:
+        with cache_lock:
+            market_cache["sectors"] = {
+                "status": "unavailable",
+                "data": None,
+                "message": (
+                    "板块处理失败："
+                    + type(exc).__name__
+                    + ": "
+                    + str(exc)[:120]
+                )
+            }
+
+    finally:
+        sector_lock.release()
 def start_background_sector_fetch():
     """控制板块行情请求频率。"""
     global last_sector_attempt
