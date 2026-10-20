@@ -261,14 +261,14 @@ def start_background_fetch():
 
     )
 
-    thread.start()
+thread.start()
 
 def fetch_sectors():
     # Fetch industry sector list using Tonghuashun
-global last_sector_attempt
+    global last_sector_attempt
 
-if not sector_lock.acquire(blocking=False):
-    return
+    if not sector_lock.acquire(blocking=False):
+        return
 try:
     last_sector_attempt = datetime.now(TZ).timestamp()
     import akshare as ak
