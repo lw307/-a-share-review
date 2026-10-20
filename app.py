@@ -128,7 +128,19 @@ def fetch_indices():
 
         import akshare as ak
 
-        df = ak.stock_zh_index_spot_em()
+                try:
+            df = ak.stock_zh_index_spot_em()
+        except Exception as em_exc:
+            try:
+                df = ak.stock_zh_index_spot_sina()
+            except Exception as sina_exc:
+                raise RuntimeError(
+                    "东方财富和新浪财经接口均获取失败。"
+                    f"东方财富：{type(em_exc).__name__}: "
+                    f"{str(em_exc)[:100]}；"
+                    f"新浪财经：{type(sina_exc).__name__}: "
+                    f"{str(sina_exc)[:100]}"
+                ) from sina_exc
 
         if df is None or df.empty:
 
