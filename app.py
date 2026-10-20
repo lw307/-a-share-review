@@ -264,82 +264,72 @@ def start_background_fetch():
     thread.start()
 
 def fetch_sectors():
-    """后台获取真实的行业板块和概念板块行情。"""
-    global last_sector_attempt
+“”“后台优先使用同花顺获取行业板块列表。”””
+global last_sector_attempt
 
-    if not sector_lock.acquire(blocking=False):
-        return
-
+if not sector_lock.acquire(blocking=False):
+    return
+try:
+    last_sector_attempt = datetime.now(TZ).timestamp()
+    import akshare as ak
+    result = {
+        "industry": [],
+        "concept": []
+    }
+    errors = []
+    # 优先使用已验证可用的同花顺行业板块接口
     try:
-        last_sector_attempt = datetime.now(TZ).timestamp()
-
-        import akshare as ak
-
-        result = {
-            "industry": [],
-            "concept": []
+        df = ak.stock_board_industry_name_ths()
+        if df is None or df.empty:
+            raise ValueError("同花顺没有返回有效行业板块数据")
+        result["industry"] = json.loads(
+            df.to_json(
+                orient="records",
+                force_ascii=False
+            )
+        )
+    except Exception as exc:
+        errors.append(
+            "同花顺行业板块: "
+            + type(exc).__name__
+            + ": "
+            + str(exc)[:120]
+        )
+    available = [
+        key for key in ("industry", "concept")
+        if result[key]
+    ]
+    with cache_lock:
+        if available:
+            market_cache["sectors"] = {
+                "status": "partial",
+                "data": result,
+                "message": (
+                    "已获取同花顺行业板块列表；"
+                    "板块实时行情和概念板块数据尚未完成接入"
+                )
+            }
+        else:
+            market_cache["sectors"] = {
+                "status": "unavailable",
+                "data": None,
+                "message": "板块获取失败：" + "；".join(errors)
+            }
+        market_cache["updated_at"] = current_time()
+except Exception as exc:
+    with cache_lock:
+        market_cache["sectors"] = {
+            "status": "unavailable",
+            "data": None,
+            "message": (
+                "板块处理失败："
+                + type(exc).__name__
+                + ": "
+                + str(exc)[:120]
+            )
         }
-        errors = []
-
-        # 分别获取行业板块和概念板块；
-        # 一个接口失败，不影响另一个接口。
-        for key, func_name in [
-            ("industry", "stock_board_industry_name_em"),
-            ("concept", "stock_board_concept_name_em")
-        ]:
-            try:
-                df = getattr(ak, func_name)()
-
-                if df is None or df.empty:
-                    raise ValueError("接口没有返回有效数据")
-
-                # 通过 pandas 的 JSON 序列化处理空值和数值类型
-                records = json.loads(
-                    df.to_json(
-                        orient="records",
-                        force_ascii=False
-                    )
-                )
-
-                result[key] = records
-
-            except Exception as exc:
-                errors.append(
-                    f"{key}: {type(exc).__name__}: "
-                    f"{str(exc)[:120]}"
-                )
-
-        available = [
-            key for key in ("industry", "concept")
-            if result[key]
-        ]
-
-        with cache_lock:
-            if available:
-                market_cache["sectors"] = {
-                    "status": (
-                        "ok" if len(available) == 2
-                        else "partial"
-                    ),
-                    "data": result,
-                    "message": (
-                        "行业板块和概念板块数据已获取"
-                        if len(available) == 2
-                        else "部分板块数据已获取"
-                    )
-                }
-            else:
-                market_cache["sectors"] = {
-                    "status": "unavailable",
-                    "data": None,
-                    "message": "板块获取失败：" + "；".join(errors)
-                }
-
-            market_cache["updated_at"] = current_time()
-
-    finally:
-        sector_lock.release()
-
+finally:
+    sector_lock.release()
 
 def start_background_sector_fetch():
     """控制板块行情请求频率。"""
