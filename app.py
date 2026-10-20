@@ -398,6 +398,37 @@ def diagnostics():
         "time": current_time()
     })
 
+@app.get("/api/test-sectors")
+def test_sectors():
+    import akshare as ak
+    import traceback
+
+    result = {}
+
+    tests = {
+        "industry_em": ak.stock_board_industry_name_em,
+        "concept_em": ak.stock_board_concept_name_em,
+        "industry_ths": ak.stock_board_industry_name_ths,
+    }
+
+    for name, func in tests.items():
+        try:
+            df = func()
+            result[name] = {
+                "status": "ok",
+                "rows": len(df),
+                "columns": list(df.columns),
+                "sample": df.head(3).to_dict(orient="records"),
+            }
+        except Exception as e:
+            result[name] = {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc()[-1500:],
+            }
+
+    return jsonify(result)
+
 @app.get("/api/health")
 
 def health():
