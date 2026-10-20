@@ -396,7 +396,7 @@ def diagnostics():
     })
 
 
-@app.get(”/api/test-sectors”)
+@app.get("/api/test-sectors")
 def test_sectors():
 import akshare as ak
 import threading
