@@ -371,6 +371,25 @@ def index():
 @app.get("/api/version")
 def version_info():
     import akshare as ak
+    functions = [
+    "stock_board_industry_name_em",
+    "stock_board_concept_name_em",
+    "stock_board_industry_name_ths",
+]
+
+result = {}
+
+for name in functions:
+    result[name] = {
+        "exists": callable(getattr(ak, name, None))
+    }
+
+return jsonify({
+    "app_version": APP_VERSION,
+    "akshare_version": ak.__version__,
+    "functions": result,
+    "time": current_time()
+})
 
     return jsonify({
         "app_version": APP_VERSION,
