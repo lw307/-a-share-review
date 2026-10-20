@@ -6,8 +6,6 @@ from zoneinfo import ZoneInfo
 
 import os
 
-import traceback
-
 app = Flask(__name__)
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -24,7 +22,7 @@ def unavailable(reason):
 
         "message": reason,
 
-        "data": None,
+        "data": None
 
     }
 
@@ -48,7 +46,7 @@ def health():
 
         "time": current_time(),
 
-        "note": "基础服务正常，行情数据通过独立接口获取并核验。",
+        "note": "基础服务运行正常"
 
     })
 
@@ -56,267 +54,35 @@ def health():
 
 def market():
 
-    result = {
+    return jsonify({
 
-        "status": "partial",
+        "status": "unavailable",
 
         "updated_at": current_time(),
 
-        "source": "AKShare",
+        "source": None,
 
-        "disclaimer": "只展示成功获取并通过基本校验的数据；缺失数据不会用示例值替代。",
+        "disclaimer": "当前为稳定模式，尚未获取真实行情数据。",
 
-        "indices": unavailable("尚未获取指数数据"),
+        "indices": unavailable("指数行情暂未接入"),
 
-        "breadth": unavailable("尚未获取市场涨跌统计"),
+        "breadth": unavailable("市场涨跌家数暂未接入"),
 
-        "amount": unavailable("尚未获取两市成交额"),
+        "amount": unavailable("两市成交额暂未接入"),
 
-        "limit_stats": unavailable("尚未获取涨停跌停统计"),
+        "limit_stats": unavailable("涨停跌停统计暂未接入"),
 
-        "sectors": unavailable("尚未获取板块排名"),
+        "sectors": unavailable("板块排名暂未接入"),
 
-    }
+        "message": (
 
-    try:
+            "基础服务正常。当前暂不请求外部行情接口，"
 
-        import akshare as ak
-
-        import pandas as pd
-
-        # 指数行情
-
-        try:
-
-            df = ak.stock_zh_index_spot_em()
-
-            if df is not None and not df.empty:
-
-                result["indices"] = {
-
-                    "status": "ok",
-
-                    "data": df.head(10).replace(
-
-                        {float("nan"): None}
-
-                    ).to_dict(orient="records"),
-
-                }
-
-        except Exception as exc:
-
-            result["indices"] = unavailable(
-
-                f"指数接口获取失败：{type(exc).__name__}"
-
-            )
-
-        # 全市场股票涨跌家数
-
-        try:
-
-            stocks = ak.stock_zh_a_spot_em()
-
-            if stocks is not None and not stocks.empty:
-
-                change_col = next(
-
-                    (
-
-                        c for c in stocks.columns
-
-                        if c in ("涨跌幅", "涨跌幅(%)")
-
-                    ),
-
-                    None,
-
-                )
-
-                if change_col is not None:
-
-                    changes = pd.to_numeric(
-
-                        stocks[change_col], errors="coerce"
-
-                    ).dropna()
-
-                    result["breadth"] = {
-
-                        "status": "ok",
-
-                        "data": {
-
-                            "上涨": int((changes > 0).sum()),
-
-                            "下跌": int((changes < 0).sum()),
-
-                            "平盘": int((changes == 0).sum()),
-
-                            "统计数量": int(len(changes)),
-
-                        },
-
-                    }
-
-                # 尝试统计成交额
-
-                amount_col = next(
-
-                    (
-
-                        c for c in stocks.columns
-
-                        if c in ("成交额", "成交额(元)")
-
-                    ),
-
-                    None,
-
-                )
-
-                if amount_col is not None:
-
-                    amounts = pd.to_numeric(
-
-                        stocks[amount_col], errors="coerce"
-
-                    ).dropna()
-
-                    if len(amounts) > 0:
-
-                        result["amount"] = {
-
-                            "status": "ok",
-
-                            "data": {
-
-                                "股票成交额合计_元": float(amounts.sum()),
-
-                                "说明": (
-
-                                    "按当前接口返回的股票成交额字段求和；"
-
-                                    "不等同于未经核验的官方两市成交额口径。"
-
-                                ),
-
-                            },
-
-                        }
-
-                # 涨停、跌停：使用接口返回的涨跌幅统计初步识别。
-
-                # 此处只作初步统计，不保证覆盖特殊涨跌幅规则。
-
-                if change_col is not None:
-
-                    limit_up = int((changes >= 9.9).sum())
-
-                    limit_down = int((changes <= -9.9).sum())
-
-                    result["limit_stats"] = {
-
-                        "status": "approximate",
-
-                        "data": {
-
-                            "涨停候选数量": limit_up,
-
-                            "跌停候选数量": limit_down,
-
-                        },
-
-                        "message": (
-
-                            "这是按涨跌幅阈值估算的候选数量，"
-
-                            "尚未核验 ST、不同板块及特殊证券规则，"
-
-                            "不能视为官方涨停跌停统计。"
-
-                        ),
-
-                    }
-
-        except Exception as exc:
-
-            error = f"{type(exc).__name__}"
-
-            result["breadth"] = unavailable(f"市场统计接口获取失败：{error}")
-
-            result["amount"] = unavailable(f"成交额获取失败：{error}")
-
-            result["limit_stats"] = unavailable(f"涨跌停统计获取失败：{error}")
-
-        # 板块排名
-
-        try:
-
-            sectors = ak.stock_board_industry_name_em()
-
-            if sectors is not None and not sectors.empty:
-
-                result["sectors"] = {
-
-                    "status": "ok",
-
-                    "data": sectors.head(20).replace(
-
-                        {float("nan"): None}
-
-                    ).to_dict(orient="records"),
-
-                    "message": (
-
-                        "此处为接口返回的行业板块数据；"
-
-                        "龙头识别和综合强弱评分尚未实现。"
-
-                    ),
-
-                }
-
-        except Exception as exc:
-
-            result["sectors"] = unavailable(
-
-                f"板块接口获取失败：{type(exc).__name__}"
-
-            )
-
-        statuses = [
-
-            result[key]["status"]
-
-            for key in (
-
-                "indices", "breadth", "amount",
-
-                "limit_stats", "sectors"
-
-            )
-
-        ]
-
-        if all(status == "ok" for status in statuses):
-
-            result["status"] = "ok"
-
-    except Exception as exc:
-
-        result["status"] = "unavailable"
-
-        result["error"] = type(exc).__name__
-
-        result["message"] = (
-
-            "行情数据组件导入失败。请检查依赖安装和 Render 部署日志。"
+            "以避免行情请求超时导致网站异常。"
 
         )
 
-    return jsonify(result)
+    })
 
 @app.get("/api")
 
@@ -330,13 +96,14 @@ def api_info():
 
             "/api/health",
 
-            "/api/market",
+            "/api/market"
 
         ],
 
-        "time": current_time(),
+        "time": current_time()
 
     })
+
 if __name__ == "__main__":
 
     app.run(
