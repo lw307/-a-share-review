@@ -472,7 +472,7 @@ for name, func_name in tests.items():
             "status": "error",
             "message": type(exc).__name__ + ": " + str(exc)[:200]
         }
-return jsonify(result))
+return jsonify(result)
 
 @app.get("/api/health")
 
