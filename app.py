@@ -398,15 +398,16 @@ def diagnostics():
 
 @app.get("/api/test-sectors")
 def test_sectors():
-import akshare as ak
-import threading
+    import akshare as ak
+    import traceback
 
-result = {}
-tests = {
-    "industry_em": "stock_board_industry_name_em",
-    "concept_em": "stock_board_concept_name_em",
-    "industry_ths": "stock_board_industry_name_ths",
-}
+    result = {}
+
+    tests = {
+        "industry_em": ak.stock_board_industry_name_em,
+        "concept_em": ak.stock_board_concept_name_em,
+        "industry_ths": ak.stock_board_industry_name_ths,
+    }
 for name, func_name in tests.items():
     result[name] = {
         "status": "testing",
