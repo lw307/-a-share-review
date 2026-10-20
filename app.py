@@ -363,10 +363,13 @@ def diagnostics():
     import akshare as ak
 
     functions = [
-        "stock_board_industry_name_em",
-        "stock_board_concept_name_em",
-        "stock_board_industry_name_ths",
-    ]
+    "stock_board_industry_name_em",
+    "stock_board_concept_name_em",
+    "stock_board_industry_name_ths",
+    "stock_board_industry_index_ths",
+    "stock_board_industry_cons_ths",
+    "stock_board_concept_index_ths",
+]
 
     result = {}
 
