@@ -6,9 +6,81 @@ from zoneinfo import ZoneInfo
 
 import os
 
+import threading
+
 app = Flask(__name__)
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+# 行情缓存：网页请求不直接等待外部行情接口
+
+market_cache = {
+
+    "status": "waiting",
+
+    "updated_at": None,
+
+    "message": "真实行情数据尚未获取",
+
+    "indices": {
+
+        "status": "unavailable",
+
+        "data": None,
+
+        "message": "指数数据等待获取"
+
+    },
+
+    "breadth": {
+
+        "status": "unavailable",
+
+        "data": None,
+
+        "message": "市场涨跌家数暂未接入"
+
+    },
+
+    "amount": {
+
+        "status": "unavailable",
+
+        "data": None,
+
+        "message": "成交额暂未接入"
+
+    },
+
+    "limit_stats": {
+
+        "status": "unavailable",
+
+        "data": None,
+
+        "message": "涨停跌停统计暂未接入"
+
+    },
+
+    "sectors": {
+
+        "status": "unavailable",
+
+        "data": None,
+
+        "message": "板块排名暂未接入"
+
+    }
+
+}
+
+cache_lock = threading.Lock()
+
+fetch_lock = threading.Lock()
+
+fetch_running = False
+
+last_attempt = 0
 
 def current_time():
 
@@ -25,6 +97,154 @@ def unavailable(reason):
         "data": None
 
     }
+
+def fetch_indices():
+
+    """
+
+    在后台尝试获取真实指数数据。
+
+    即使外部接口响应缓慢，网页请求也不会等待这个函数结束。
+
+    """
+
+    global fetch_running, last_attempt
+
+    if not fetch_lock.acquire(blocking=False):
+
+        return
+
+    try:
+
+        fetch_running = True
+
+        last_attempt = datetime.now(TZ).timestamp()
+
+        with cache_lock:
+
+            market_cache["message"] = "正在后台获取真实指数数据"
+
+        import akshare as ak
+
+        df = ak.stock_zh_index_spot_em()
+
+        if df is None or df.empty:
+
+            raise ValueError("指数接口没有返回有效数据")
+
+        records = df.head(10).to_dict(orient="records")
+
+        # 将 NaN 等非标准数值转换为 JSON 可处理的 None
+
+        clean_records = []
+
+        for record in records:
+
+            clean_record = {}
+
+            for key, value in record.items():
+
+                try:
+
+                    if value is None:
+
+                        clean_record[key] = None
+
+                    elif str(value).lower() == "nan":
+
+                        clean_record[key] = None
+
+                    elif hasattr(value, "item"):
+
+                        clean_record[key] = value.item()
+
+                    else:
+
+                        clean_record[key] = value
+
+                except Exception:
+
+                    clean_record[key] = str(value)
+
+            clean_records.append(clean_record)
+
+        with cache_lock:
+
+            market_cache["indices"] = {
+
+                "status": "ok",
+
+                "data": clean_records,
+
+                "message": "指数数据已获取"
+
+            }
+
+            market_cache["updated_at"] = current_time()
+
+            market_cache["status"] = "partial"
+
+            market_cache["message"] = (
+
+                "已获取指数数据，其他行情模块正在逐步接入"
+
+            )
+
+    except Exception as exc:
+
+        with cache_lock:
+
+            market_cache["indices"] = unavailable(
+
+                "指数获取失败：" + type(exc).__name__
+
+            )
+
+            market_cache["message"] = (
+
+                "指数接口暂时不可用。网站仍可正常访问，请稍后重试。"
+
+            )
+
+    finally:
+
+        fetch_running = False
+
+        fetch_lock.release()
+
+def start_background_fetch():
+
+    """
+
+    控制请求频率，避免每次打开网页都请求外部数据。
+
+    """
+
+    global last_attempt
+
+    now = datetime.now(TZ).timestamp()
+
+    with cache_lock:
+
+        indices_ready = market_cache["indices"]["status"] == "ok"
+
+    if indices_ready and now - last_attempt < 600:
+
+        return
+
+    if now - last_attempt < 60:
+
+        return
+
+    thread = threading.Thread(
+
+        target=fetch_indices,
+
+        daemon=True
+
+    )
+
+    thread.start()
 
 @app.get("/")
 
@@ -54,35 +274,49 @@ def health():
 
 def market():
 
-    return jsonify({
+    start_background_fetch()
 
-        "status": "unavailable",
+    with cache_lock:
 
-        "updated_at": current_time(),
+        result = {
 
-        "source": None,
+            "status": market_cache["status"],
 
-        "disclaimer": "当前为稳定模式，尚未获取真实行情数据。",
+            "updated_at": market_cache["updated_at"],
 
-        "indices": unavailable("指数行情暂未接入"),
+            "source": "AKShare",
 
-        "breadth": unavailable("市场涨跌家数暂未接入"),
+            "disclaimer": (
 
-        "amount": unavailable("两市成交额暂未接入"),
+                "仅展示实际获取的数据；"
 
-        "limit_stats": unavailable("涨停跌停统计暂未接入"),
+                "未获取的数据不会使用虚构数值填充。"
 
-        "sectors": unavailable("板块排名暂未接入"),
+            ),
 
-        "message": (
+            "message": market_cache["message"],
 
-            "基础服务正常。当前暂不请求外部行情接口，"
+            "indices": dict(market_cache["indices"]),
 
-            "以避免行情请求超时导致网站异常。"
+            "breadth": dict(market_cache["breadth"]),
 
-        )
+            "amount": dict(market_cache["amount"]),
 
-    })
+            "limit_stats": dict(market_cache["limit_stats"]),
+
+            "sectors": dict(market_cache["sectors"])
+
+        }
+
+    if result["indices"]["status"] == "ok":
+
+        result["status"] = "partial"
+
+    elif fetch_running:
+
+        result["status"] = "loading"
+
+    return jsonify(result)
 
 @app.get("/api")
 
