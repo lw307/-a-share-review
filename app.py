@@ -264,7 +264,7 @@ def start_background_fetch():
     thread.start()
 
 def fetch_sectors():
-“”“后台优先使用同花顺获取行业板块列表。”””
+    # Fetch industry sector list using Tonghuashun
 global last_sector_attempt
 
 if not sector_lock.acquire(blocking=False):
