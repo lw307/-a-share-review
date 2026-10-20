@@ -8,6 +8,8 @@ import os
 
 import threading
 
+APP_VERSION = "20261020-index-test-v1"
+
 app = Flask(__name__)
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -262,11 +264,13 @@ def health():
 
         "service": "A股每日复盘",
 
+        "version": APP_VERSION,
+
         "timezone": "Asia/Shanghai",
 
         "time": current_time(),
 
-        "note": "基础服务运行正常"
+        "note": "新版后台行情测试"
 
     })
 
