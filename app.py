@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-sectorfix-v5"
+APP_VERSION = "20261021-sectorfix-v6"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -786,6 +786,40 @@ def test_sectors():
         })
     except Exception as exc:
         return jsonify({"app_version": APP_VERSION, "error": f"{type(exc).__name__}: {str(exc)[:160]}", "time": now_iso()}), 500
+
+
+@app.get("/api/test-concept-source")
+def test_concept_source():
+    """手动诊断同花顺概念汇总接口；只查看字段，不把结果直接当作实时排名。"""
+    try:
+        import akshare as ak
+        func_name = "stock_board_concept_summary_ths"
+        fn = getattr(ak, func_name, None)
+        if not callable(fn):
+            return jsonify({"app_version": APP_VERSION, "source": func_name, "exists": False, "time": now_iso()})
+        df = fn()
+        columns = [str(c) for c in getattr(df, "columns", [])]
+        rows = safe_records(df.head(3)) if df is not None and hasattr(df, "head") else []
+        valid, reason = sector_frame_is_snapshot(df)
+        return jsonify({
+            "app_version": APP_VERSION,
+            "source": func_name,
+            "exists": True,
+            "row_count": int(len(df)) if df is not None else 0,
+            "columns": columns,
+            "snapshot_validation_passed": bool(valid),
+            "validation_note": reason or "字段检查通过；仍需人工确认其语义与时间口径后才能用于排名",
+            "preview_first_3_rows": rows,
+            "warning": "此接口仅用于诊断字段结构；本端点不会把返回内容直接写入板块排名。",
+            "time": now_iso(),
+        })
+    except Exception as exc:
+        return jsonify({
+            "app_version": APP_VERSION,
+            "source": "stock_board_concept_summary_ths",
+            "error": f"{type(exc).__name__}: {str(exc)[:220]}",
+            "time": now_iso(),
+        }), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
