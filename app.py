@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-full-replacement-v1"
+APP_VERSION = "20261021-fallback-v2"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -72,6 +72,33 @@ def as_float(value):
 def first_column(df, candidates):
     return next((c for c in candidates if c in df.columns), None)
 
+def normalize_stock_snapshot(df, source_name):
+    """Normalize supported quote-source columns to a shared schema."""
+    import pandas as pd
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    out = df.copy()
+    aliases = {
+        "代码": ["代码", "股票代码", "code", "symbol"],
+        "名称": ["名称", "股票简称", "name"],
+        "最新价": ["最新价", "最新", "现价", "trade", "price"],
+        "涨跌幅": ["涨跌幅", "涨幅", "change_percent", "changepercent"],
+        "成交额": ["成交额", "成交金额", "amount"],
+        "成交量": ["成交量", "volume"],
+        "今开": ["今开", "open"],
+        "最高": ["最高", "high"],
+        "最低": ["最低", "low"],
+    }
+    normalized = pd.DataFrame(index=out.index)
+    for target, candidates in aliases.items():
+        col = first_column(out, candidates)
+        if col is not None:
+            normalized[target] = out[col]
+    if "代码" not in normalized.columns or "最新价" not in normalized.columns:
+        return None
+    normalized["_source"] = source_name
+    return normalized
+
 def fetch_market_data():
     """获取指数与个股快照；耗时操作放在后台线程。"""
     global market_fetch_running, market_last_attempt
@@ -120,18 +147,28 @@ def fetch_market_data():
             except Exception as exc:
                 errors.append(f"{source_name}指数：{type(exc).__name__}: {str(exc)[:100]}")
 
-        # 个股快照：用于成交额、市场宽度、涨跌停估算及模拟账户报价。
-        try:
-            fn = getattr(ak, "stock_zh_a_spot_em", None)
-            if not callable(fn):
-                raise RuntimeError("AKShare 未提供 stock_zh_a_spot_em")
-            df_stocks = fn()
-            stocks = safe_records(df_stocks)
-            if not stocks:
-                raise RuntimeError("个股快照为空")
-        except Exception as exc:
-            errors.append(f"个股快照：{type(exc).__name__}: {str(exc)[:120]}")
-            df_stocks = None
+        # 个股快照：先尝试东方财富，失败后尝试新浪。统一列名后供统计与模拟账户使用。
+        df_stocks = None
+        for source_name, func_name in [
+            ("东方财富", "stock_zh_a_spot_em"),
+            ("新浪财经备用", "stock_zh_a_spot"),
+        ]:
+            try:
+                fn = getattr(ak, func_name, None)
+                if not callable(fn):
+                    errors.append(f"{source_name}个股接口函数不存在：{func_name}")
+                    continue
+                raw = fn()
+                candidate = normalize_stock_snapshot(raw, source_name)
+                if candidate is None or candidate.empty:
+                    raise RuntimeError("接口没有返回可识别的个股快照")
+                df_stocks = candidate
+                stocks = safe_records(candidate)
+                break
+            except Exception as exc:
+                errors.append(f"{source_name}个股快照：{type(exc).__name__}: {str(exc)[:100]}")
+        if df_stocks is None:
+            errors.append("所有个股快照来源均失败；个股统计暂不可用")
 
         # 去重指数，优先东方财富记录。
         seen = set()
@@ -201,6 +238,25 @@ def fetch_market_data():
                     "message": "根据涨跌幅及常见涨跌停比例估算，非交易所官方精确统计；新股、特殊规则股可能造成偏差。"
                 }
 
+        # 如果全市场个股快照失败，尝试用上证指数与深证成指记录中的成交额字段估算两市成交额。
+        # 此值不用于替代个股快照或市场宽度统计，并明确标记来源和口径。
+        if amount.get("status") == "unavailable" and unique_indices:
+            major_amounts = []
+            for row in unique_indices:
+                name = str(row.get("名称") or row.get("指数名称") or row.get("name") or "")
+                val = as_float(row.get("成交额") or row.get("成交金额") or row.get("amount"))
+                if val is not None and any(k in name for k in ("上证指数", "上证综指", "深证成指")):
+                    major_amounts.append((name, val))
+            # Only use one Shanghai and one Shenzhen broad-market index to avoid duplicate index records.
+            sh = next((v for n, v in major_amounts if "上证" in n), None)
+            sz = next((v for n, v in major_amounts if "深证成指" in n), None)
+            if sh is not None and sz is not None:
+                amount = {
+                    "status": "partial",
+                    "data": {"总成交额": sh + sz, "单位": "元", "股票数": None},
+                    "message": "个股快照不可用；按上证指数与深证成指行情记录中的成交额相加作为备用估算，口径可能与交易所统计有差异。"
+                }
+
         with cache_lock:
             market_cache["indices"] = {
                 "status": "ok" if unique_indices else "unavailable",
@@ -239,21 +295,30 @@ def fetch_sector_data():
         import akshare as ak
         result = {"industry": [], "concept": []}
         errors = []
-        for key, func_name in [
-            ("industry", "stock_board_industry_name_em"),
-            ("concept", "stock_board_concept_name_em"),
-        ]:
-            try:
-                fn = getattr(ak, func_name, None)
-                if not callable(fn):
-                    raise RuntimeError(f"接口函数 {func_name} 不存在")
-                df = fn()
-                records = safe_records(df)
-                if not records:
-                    raise RuntimeError("接口没有返回有效记录")
-                result[key] = records
-            except Exception as exc:
-                errors.append(f"{key}：{type(exc).__name__}: {str(exc)[:100]}")
+        sources = {
+            "industry": ["stock_board_industry_name_em", "stock_board_industry_name_ths"],
+            "concept": ["stock_board_concept_name_em", "stock_board_concept_name_ths"],
+        }
+        for key, func_names in sources.items():
+            for func_name in func_names:
+                try:
+                    fn = getattr(ak, func_name, None)
+                    if not callable(fn):
+                        errors.append(f"{key}/{func_name}：函数不存在")
+                        continue
+                    df = fn()
+                    records = safe_records(df)
+                    if not records:
+                        raise RuntimeError("接口没有返回有效记录")
+                    # Accept only likely snapshot/ranking fields; avoid treating arbitrary historical rows as board rankings.
+                    sample = records[0]
+                    has_change = any(k in sample for k in ("涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%"))
+                    if not has_change:
+                        raise RuntimeError("返回数据缺少涨跌幅字段，不作为实时板块排名使用")
+                    result[key] = records
+                    break
+                except Exception as exc:
+                    errors.append(f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:80]}")
         available = bool(result["industry"] or result["concept"])
         both = bool(result["industry"] and result["concept"])
         with cache_lock:
@@ -384,7 +449,7 @@ def diagnostics():
     try:
         import akshare as ak
         version = getattr(ak, "__version__", "unknown")
-        names = ["stock_zh_index_spot_em", "stock_zh_index_spot_sina", "stock_zh_a_spot_em", "stock_board_industry_name_em", "stock_board_concept_name_em"]
+        names = ["stock_zh_index_spot_em", "stock_zh_index_spot_sina", "stock_zh_a_spot_em", "stock_zh_a_spot", "stock_board_industry_name_em", "stock_board_concept_name_em", "stock_board_industry_name_ths", "stock_board_concept_name_ths"]
         funcs = {n: callable(getattr(ak, n, None)) for n in names}
     except Exception as exc:
         version = None
@@ -399,7 +464,7 @@ def market():
     start_background_sector_fetch()
     with cache_lock:
         result = json.loads(json.dumps(market_cache, ensure_ascii=False, default=str))
-    result["source"] = "AKShare"
+    result["source"] = "AKShare（按接口可用情况尝试多数据源）"
     result["disclaimer"] = "仅展示数据源实际返回的数据。涨跌停数量为基于行情快照的估算，缺失数据不会虚构填充。"
     result["fetching"] = {"market": market_fetch_running, "sectors": sector_fetch_running}
     return jsonify(result)
