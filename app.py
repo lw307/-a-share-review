@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-sectorfix-v4"
+APP_VERSION = "20261021-sectorfix-v5"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -47,7 +47,7 @@ market_cache = {
     "breadth": unavailable("市场涨跌家数等待获取"),
     "amount": unavailable("成交额等待获取"),
     "limit_stats": unavailable("涨停跌停统计等待获取"),
-    "sectors": {"status": "unavailable", "data": {"industry": [], "concept": []}, "message": "板块行情等待获取"},
+    "sectors": {"status": "unavailable", "data": {"industry": [], "concept": []}, "message": "板块行情等待获取", "updated_at": None},
     "stocks": {"status": "unavailable", "data": [], "message": "个股行情等待获取"},
 }
 
@@ -392,15 +392,18 @@ def fetch_sector_data():
         if errors:
             details.append("接口提示：" + "；".join(errors[:4]))
         with cache_lock:
+            sector_updated = now_iso()
             market_cache["sectors"] = {
                 "status": status,
                 "data": result if available else None,
-                "message": message + (("；" + "；".join(details)) if details else "")
+                "message": message + (("；" + "；".join(details)) if details else ""),
+                "updated_at": sector_updated,
+                "source_used": source_used,
+                "errors": errors[:8],
             }
-            market_cache["updated_at"] = now_iso()
     except Exception as exc:
         with cache_lock:
-            market_cache["sectors"] = {"status": "unavailable", "data": None, "message": f"板块获取失败：{type(exc).__name__}: {str(exc)[:120]}"}
+            market_cache["sectors"] = {"status": "unavailable", "data": None, "message": f"板块获取失败：{type(exc).__name__}: {str(exc)[:120]}", "updated_at": now_iso(), "source_used": {}, "errors": [f"{type(exc).__name__}: {str(exc)[:160]}"]}
     finally:
         sector_fetch_running = False
         sector_fetch_lock.release()
@@ -519,14 +522,41 @@ def diagnostics():
     try:
         import akshare as ak
         version = getattr(ak, "__version__", "unknown")
-        names = ["stock_zh_index_spot_em", "stock_zh_index_spot_sina", "stock_zh_a_spot_em", "stock_zh_a_spot", "stock_board_industry_name_em", "stock_board_concept_name_em", "stock_board_industry_name_ths", "stock_board_concept_name_ths", "stock_board_industry_summary_ths", "stock_board_concept_spot_em"]
-        funcs = {n: callable(getattr(ak, n, None)) for n in names}
+        names = [
+            "stock_zh_index_spot_em", "stock_zh_index_spot_sina", "stock_zh_a_spot_em", "stock_zh_a_spot",
+            "stock_board_industry_name_em", "stock_board_concept_name_em", "stock_board_industry_name_ths",
+            "stock_board_concept_name_ths", "stock_board_industry_summary_ths", "stock_board_concept_spot_em",
+            "stock_board_concept_index_ths", "stock_board_concept_summary_ths",
+        ]
+        funcs = {n: {"exists": callable(getattr(ak, n, None))} for n in names}
     except Exception as exc:
         version = None
         funcs = {}
         error = f"{type(exc).__name__}: {str(exc)[:160]}"
         return jsonify({"app_version": APP_VERSION, "akshare_version": version, "functions": funcs, "error": error, "time": now_iso()})
-    return jsonify({"app_version": APP_VERSION, "akshare_version": version, "functions": funcs, "time": now_iso()})
+    with cache_lock:
+        market_updated = market_cache.get("updated_at")
+        sectors = json.loads(json.dumps(market_cache.get("sectors", {}), ensure_ascii=False, default=str))
+        market_status = market_cache.get("status")
+        market_message = market_cache.get("message")
+    return jsonify({
+        "app_version": APP_VERSION,
+        "akshare_version": version,
+        "functions": funcs,
+        "cache": {
+            "market_status": market_status,
+            "market_updated_at": market_updated,
+            "market_message": market_message,
+            "sector_status": sectors.get("status"),
+            "sector_updated_at": sectors.get("updated_at"),
+            "sector_message": sectors.get("message"),
+            "sector_source_used": sectors.get("source_used", {}),
+            "sector_errors": sectors.get("errors", []),
+            "market_fetch_running": market_fetch_running,
+            "sector_fetch_running": sector_fetch_running,
+        },
+        "time": now_iso(),
+    })
 
 @app.get("/api/market")
 def market():
@@ -637,6 +667,9 @@ def stocks():
 
 @app.get("/api/report")
 def report():
+    # Trigger background refresh if cache is empty/stale; report itself stays responsive.
+    start_background_fetch()
+    start_background_sector_fetch()
     with cache_lock:
         snapshot = json.loads(json.dumps(market_cache, ensure_ascii=False, default=str))
     sectors = snapshot.get("sectors", {}).get("data") or {}
@@ -653,12 +686,54 @@ def report():
             name = field(row, ["板块名称", "名称", "板块", "行业名称", "行业", "name"])
             change = as_float(field(row, ["涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%", "涨跌幅（%）", "pct_change", "change_percent"]))
             if name is not None and change is not None:
-                normalized.append({"name": name, "change_percent": change, "leader": field(row, ["领涨股票", "领涨股"]), "leader_change": field(row, ["领涨股票-涨跌幅", "领涨股涨跌幅"])})
+                normalized.append({
+                    "name": name,
+                    "change_percent": change,
+                    "leader": field(row, ["领涨股票", "领涨股", "领涨股票名称"]),
+                    "leader_change": field(row, ["领涨股票-涨跌幅", "领涨股涨跌幅"]),
+                    "leader_code": field(row, ["领涨股票代码", "领涨股代码", "领涨股票-代码", "领涨股-代码"]),
+                })
         return sorted(normalized, key=lambda x: x["change_percent"], reverse=True)
-    top_industry, top_concept = rank(industry)[:10], rank(concept)[:10]
+    # Sector leader names are not promoted as recommendations unless a stock code is present
+    # and that code is confirmed to belong to the user's allowed Shanghai/Shenzhen main boards.
+    def validate_leaders(rows):
+        out = []
+        for row in rows:
+            item = dict(row)
+            raw_code = field(item, ["leader_code", "领涨股票代码", "领涨股代码", "领涨股票-代码", "代码", "股票代码", "code"])
+            code = normalize_stock_code(raw_code) if raw_code not in (None, "") else None
+            item["leader_code"] = code
+            item["leader_verified_main_board"] = bool(code and is_main_board_code(code))
+            if not item["leader_verified_main_board"]:
+                item["leader"] = None
+                item["leader_change"] = None
+            out.append(item)
+        return out
+    top_industry, top_concept = validate_leaders(rank(industry)[:10]), validate_leaders(rank(concept)[:10])
+    def age_seconds(iso_value):
+        if not iso_value:
+            return None
+        try:
+            return max(0, int((datetime.now(TZ) - datetime.fromisoformat(iso_value)).total_seconds()))
+        except Exception:
+            return None
+    market_updated_at = snapshot.get("updated_at")
+    sector_updated_at = (snapshot.get("sectors") or {}).get("updated_at")
+    market_age = age_seconds(market_updated_at)
+    sector_age = age_seconds(sector_updated_at)
+    freshness = {
+        "market_updated_at": market_updated_at,
+        "market_age_seconds": market_age,
+        "market_is_stale": market_age is None or market_age > 1800,
+        "sector_updated_at": sector_updated_at,
+        "sector_age_seconds": sector_age,
+        "sector_is_stale": sector_age is None or sector_age > 1800,
+        "note": "超过30分钟的数据标记为可能过期；盘中快照不等于最终收盘数据。"
+    }
     return jsonify({
         "date": datetime.now(TZ).strftime("%Y-%m-%d"),
         "generated_at": now_iso(),
+        "freshness": freshness,
         "market_status": snapshot.get("status"),
         "market_message": snapshot.get("message"),
         "indices": snapshot.get("indices"),
@@ -670,7 +745,9 @@ def report():
         "notes": [
             "板块排名依据通过字段校验的当日行情快照；行业板块可使用同花顺实时汇总兜底，盘中数据不等于收盘排名。",
             "若概念板块接口不可用，概念榜会明确留空；不会把同花顺历史概念事件表或名称列表误当成当日涨幅排名。",
-            "板块领涨股不自动等同于龙一、龙二、龙三；还需核对连板高度、成交额、换手率、封板质量、题材持续性和消息来源。",
+            "板块接口返回的领涨股只有在返回股票代码且确认属于沪深主板时才显示；无法核验的领涨股会留空，避免把创业板、科创板或北交所个股混入候选。",
+            "超过30分钟的数据会标记为可能过期；生成时间不代表行情时间，盘中快照不等于收盘数据。",
+            "概念板块备用源必须提供有效的当日涨跌幅；同花顺名称清单或历史指数序列不会被伪装成实时概念排名。",
             "涨跌停数量如标注为估算，不能当作交易所官方精确统计。",
             "报告仅使用实际获取的数据，不会补造缺失行情。"
         ]
@@ -685,20 +762,25 @@ def test_sectors():
             "stock_board_industry_name_em", "stock_board_industry_summary_ths",
             "stock_board_concept_name_em", "stock_board_concept_spot_em",
             "stock_board_industry_name_ths", "stock_board_concept_name_ths",
-            "stock_board_concept_summary_ths",
+            "stock_board_concept_summary_ths", "stock_board_concept_index_ths",
         ]
         functions = {name: {"exists": callable(getattr(ak, name, None))} for name in names}
         with cache_lock:
-            sector_status = market_cache.get("sectors", {}).get("status")
-            sector_message = market_cache.get("sectors", {}).get("message")
+            sector_cache = json.loads(json.dumps(market_cache.get("sectors", {}), ensure_ascii=False, default=str))
+            sector_status = sector_cache.get("status")
+            sector_message = sector_cache.get("message")
         return jsonify({
             "app_version": APP_VERSION,
             "functions": functions,
             "sector_cache_status": sector_status,
             "sector_cache_message": sector_message,
+            "sector_updated_at": sector_cache.get("updated_at"),
+            "sector_source_used": sector_cache.get("source_used", {}),
+            "sector_errors": sector_cache.get("errors", []),
+            "fetch_running": {"market": market_fetch_running, "sectors": sector_fetch_running},
             "strategy": {
                 "industry": "东方财富行业快照优先；失败时使用同花顺行业实时汇总",
-                "concept": "优先尝试 stock_board_concept_spot_em 实时快照；仅接受包含有效当日涨跌幅的数据，不把名称列表当成排名",
+                "concept": "优先尝试 stock_board_concept_spot_em；仅接受含有效当日涨跌幅的数据。名称清单、历史指数和事件表不会被当作实时排名",
             },
             "time": now_iso(),
         })
