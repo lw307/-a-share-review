@@ -1,28 +1,32 @@
-A股每日复盘 v9 后端升级补丁
-版本：20261021-sectorfix-v9
+A股每日复盘 v10 后端升级补丁
+版本：20261021-marketquality-v10
 
-本次新增：
-1. 板块相对强度评分（0-100）：板块涨幅排名为主；在数据源提供时，纳入上涨广度、成交额排名和领涨股涨幅排名。
-2. 主题归类提示：对部分相近板块增加主题分组，便于识别题材重复；不擅自合并原始板块。
-3. 严格主板校验：领涨股必须有代码且符合沪深主板代码规则，否则隐藏名称与涨幅。
-4. 新增全市场主板强势观察榜 main_board_watchlist，排除创业板、科创板、北交所、ST和退市整理标记。
-5. 在 /api/report 中新增 industry_strength_ranked、concept_strength_ranked、main_board_watchlist、sector_scoring_method、dragon_analysis_status 等字段。
-6. 保留旧首页使用的 industry_top10/concept_top10，仍按当日涨跌幅排序，避免旧版页面表格排序与显示不一致。
+本次升级重点：
+1. 新增 /api/market-diagnostics，只读显示指数与个股行情数据源的逐项尝试结果、返回行数、字段和错误类型。
+2. 个股快照至少返回100行才会作为全市场统计来源，避免把异常的少量数据误当全市场快照。
+3. 在 /api/report 中新增 market_source_diagnostics 和 fetch_running，便于判断后台是否仍在抓取、哪些来源失败。
+4. 每个板块新增 score_data_quality：评分覆盖率、可用指标、缺失指标和数据质量状态。
+5. 若板块评分指标缺失，strength_label 会标记“评分部分缺失”，避免只看分数造成误判。
+6. 保留 v9 的新浪概念备用源、行业备用源、主板过滤和模拟账户逻辑。
 
 重要限制：
-- 本补丁只修改 app.py，不修改 index.html，因此新评分和观察榜目前可通过 /api/report JSON 查看；旧首页未必展示新字段。
-- 当前接口没有完整板块成分股映射，不能可靠推断每个板块的龙二、龙三，因此不会编造。
-- 单日快照不能证明主线持续性；API 会说明持续性评分需要跨日历史数据。
-- 评分是当日相对比较，不是资金流向的精确测量，不预测未来收益，也不构成自动买入信号。
+- 本补丁增加诊断与评分质量标记，不承诺解决外部行情网站的网络封锁或连接失败。
+- 如果 Render 所在网络无法访问东方财富/新浪等数据源，接口会显示具体错误，不会编造行情。
+- 新增字段主要先出现在 JSON API；没有修改 index.html，首页可能暂时不展示全部新字段。
+- /api/market-diagnostics 是只读接口，不会主动刷新行情。请先打开首页或 /api/market 触发后台刷新，再查看诊断接口。
+- 板块成分股映射仍不完整，因此不虚构每个板块的龙二、龙三。
+- 只允许沪深主板：沪市600/601/603/605，深市000/001/002/003；排除创业板、科创板、北交所。
 - 模拟交易不连接券商，不执行真实委托。
-- Render 免费实例重启可能丢失内存缓存/本地文件；每日 17:24 自动推送功能尚未在本补丁中实现。
+- Render 免费实例休眠或重启可能丢失内存缓存/本地文件；每天17:24自动生成并推送仍未在此补丁中实现。
 
-部署方法（iPhone GitHub 网页操作）：
-1. 打开仓库 https://github.com/lw307/-a-share-review
-2. 进入根目录，点 Add file -> Upload files。
-3. 上传本文件夹内的 app.py，选择覆盖仓库根目录的 app.py。
+部署方法（iPhone GitHub网页）：
+1. 打开 https://github.com/lw307/-a-share-review
+2. 进入仓库根目录，点 Add file -> Upload files。
+3. 上传本文件夹中的 app.py，覆盖根目录 app.py。
 4. Commit changes，等待 Render 自动部署完成。
-5. 打开 https://a-share-review.onrender.com/api/health，确认 version 为 20261021-sectorfix-v9。
-6. 打开 https://a-share-review.onrender.com/api/report，查看新增字段。
+5. 打开 https://a-share-review.onrender.com/api/health，确认 version 为 20261021-marketquality-v10。
+6. 打开 https://a-share-review.onrender.com/api/market 触发后台刷新，等待约30-60秒。
+7. 打开 https://a-share-review.onrender.com/api/market-diagnostics 查看每个数据源的结果。
+8. 打开 https://a-share-review.onrender.com/api/report，检查 score_data_quality 和 market_source_diagnostics。
 
-本地只完成 Python 语法检查；部署后必须以线上 JSON 为准。
+本地已通过 Python 语法编译检查；未在用户的 Render 环境实测。请以上线后的 API 返回为准。

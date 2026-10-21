@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-sectorfix-v9"
+APP_VERSION = "20261021-marketquality-v10"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -49,6 +49,7 @@ market_cache = {
     "limit_stats": unavailable("涨停跌停统计等待获取"),
     "sectors": {"status": "unavailable", "data": {"industry": [], "concept": []}, "message": "板块行情等待获取", "updated_at": None},
     "stocks": {"status": "unavailable", "data": [], "message": "个股行情等待获取"},
+    "source_diagnostics": {"checked_at": None, "attempts": [], "stock_snapshot_rows": 0, "index_rows": 0},
 }
 
 def safe_records(df):
@@ -124,6 +125,7 @@ def fetch_market_data():
     try:
         import akshare as ak
         errors = []
+        source_attempts = []
         indices = []
         stocks = []
 
@@ -140,12 +142,16 @@ def fetch_market_data():
                     continue
                 df = fn()
                 if df is None or df.empty:
-                    errors.append(f"{source_name}指数接口返回空数据")
+                    msg = f"{source_name}指数接口返回空数据"
+                    errors.append(msg)
+                    source_attempts.append({"category": "indices", "source": source_name, "function": func_name, "status": "empty", "row_count": 0, "error": msg})
                     continue
                 code_col = first_column(df, ["代码", "指数代码", "symbol", "code"])
                 name_col = first_column(df, ["名称", "指数名称", "name"])
                 if not code_col and not name_col:
-                    errors.append(f"{source_name}指数数据缺少名称/代码列")
+                    msg = f"{source_name}指数数据缺少名称/代码列"
+                    errors.append(msg)
+                    source_attempts.append({"category": "indices", "source": source_name, "function": func_name, "status": "invalid_schema", "row_count": len(df), "columns": list(map(str, list(df.columns)[:20])), "error": msg})
                     continue
                 mask = None
                 if code_col:
@@ -159,8 +165,11 @@ def fetch_market_data():
                 for row in safe_records(picked):
                     row["_source"] = source_name
                     indices.append(row)
+                source_attempts.append({"category": "indices", "source": source_name, "function": func_name, "status": "ok" if len(picked) else "no_target_rows", "row_count": len(df), "matched_rows": len(picked), "columns": list(map(str, list(df.columns)[:20]))})
             except Exception as exc:
-                errors.append(f"{source_name}指数：{type(exc).__name__}: {str(exc)[:100]}")
+                msg = f"{source_name}指数：{type(exc).__name__}: {str(exc)[:100]}"
+                errors.append(msg)
+                source_attempts.append({"category": "indices", "source": source_name, "function": func_name, "status": "error", "error": msg})
 
         # 个股快照：先尝试东方财富，失败后尝试新浪。统一列名后供统计与模拟账户使用。
         df_stocks = None
@@ -176,12 +185,24 @@ def fetch_market_data():
                 raw = fn()
                 candidate = normalize_stock_snapshot(raw, source_name)
                 if candidate is None or candidate.empty:
-                    raise RuntimeError("接口没有返回可识别的个股快照")
+                    cols = list(map(str, list(raw.columns)[:20])) if raw is not None and hasattr(raw, "columns") else []
+                    msg = "接口没有返回可识别的个股快照"
+                    source_attempts.append({"category": "stocks", "source": source_name, "function": func_name, "status": "invalid_schema", "row_count": int(len(raw)) if raw is not None and hasattr(raw, "__len__") else 0, "columns": cols, "error": msg})
+                    raise RuntimeError(msg)
+                if len(candidate) < 100:
+                    msg = f"快照仅返回{len(candidate)}行，低于全市场快照最低校验阈值100行"
+                    source_attempts.append({"category": "stocks", "source": source_name, "function": func_name, "status": "insufficient_rows", "row_count": len(candidate), "columns": list(map(str, list(raw.columns)[:20])), "error": msg})
+                    raise RuntimeError(msg)
                 df_stocks = candidate
                 stocks = safe_records(candidate)
+                source_attempts.append({"category": "stocks", "source": source_name, "function": func_name, "status": "ok", "row_count": len(candidate), "columns": list(map(str, list(raw.columns)[:20]))})
                 break
             except Exception as exc:
-                errors.append(f"{source_name}个股快照：{type(exc).__name__}: {str(exc)[:100]}")
+                msg = f"{source_name}个股快照：{type(exc).__name__}: {str(exc)[:100]}"
+                errors.append(msg)
+                # Avoid duplicating an already-recorded schema/row-count diagnostic.
+                if not source_attempts or source_attempts[-1].get("function") != func_name or source_attempts[-1].get("category") != "stocks":
+                    source_attempts.append({"category": "stocks", "source": source_name, "function": func_name, "status": "error", "error": msg})
         if df_stocks is None:
             errors.append("所有个股快照来源均失败；个股统计暂不可用")
 
@@ -286,6 +307,13 @@ def fetch_market_data():
                 "data": stocks,
                 "message": f"个股快照共 {len(stocks)} 条" if stocks else "个股快照不可用"
             }
+            market_cache["source_diagnostics"] = {
+                "checked_at": now_iso(),
+                "attempts": source_attempts[:12],
+                "stock_snapshot_rows": len(stocks),
+                "index_rows": len(unique_indices),
+                "note": "个股快照至少100行才作为全市场统计来源；接口错误、字段不匹配和样本不足分别记录。"
+            }
             market_cache["updated_at"] = now_iso()
             available = sum(market_cache[k]["status"] in ("ok", "partial") for k in ["indices", "breadth", "amount", "limit_stats"])
             market_cache["status"] = "ok" if available == 4 else ("partial" if available else "unavailable")
@@ -294,6 +322,7 @@ def fetch_market_data():
         with cache_lock:
             market_cache["status"] = "unavailable"
             market_cache["message"] = f"行情抓取失败：{type(exc).__name__}: {str(exc)[:180]}"
+            market_cache["source_diagnostics"] = {"checked_at": now_iso(), "attempts": [{"category": "market", "status": "error", "error": f"{type(exc).__name__}: {str(exc)[:180]}"}], "stock_snapshot_rows": 0, "index_rows": 0}
             market_cache["updated_at"] = now_iso()
     finally:
         market_fetch_running = False
@@ -839,7 +868,16 @@ def report():
                 components["领涨股涨幅排名"] = percentile(leader_changes, i)
             weights = {"板块涨幅排名": 0.50, "板块上涨广度": 0.20, "成交额排名": 0.15, "领涨股涨幅排名": 0.15}
             active = [(weights[k], v) for k, v in components.items() if v is not None]
-            item["strength_score"] = round(sum(w * v for w, v in active) / sum(w for w, _ in active), 1) if active else None
+            active_weight = sum(w for w, _ in active)
+            item["strength_score"] = round(sum(w * v for w, v in active) / active_weight, 1) if active else None
+            coverage = round(active_weight / sum(weights.values()) * 100, 1)
+            item["score_data_quality"] = {
+                "coverage_percent": coverage,
+                "available_components": list(components.keys()),
+                "missing_components": [k for k in weights if k not in components],
+                "status": "较完整" if coverage >= 95 else ("部分缺失" if coverage >= 70 else "数据不足"),
+                "note": "评分只对可用指标按权重重新归一化；覆盖率较低时不宜与数据完整的板块直接等同比较。"
+            }
             item["score_components"] = {k: round(v, 1) if v is not None else None for k, v in components.items()}
             item["theme_group"] = theme_group(item["name"])
             item["leader_verified_main_board"] = bool(item.get("leader_code") and is_main_board_code(item["leader_code"]))
@@ -850,13 +888,13 @@ def report():
             if item["strength_score"] is None:
                 item["strength_label"] = "数据不足"
             elif item["strength_score"] >= 80:
-                item["strength_label"] = "强势观察"
+                item["strength_label"] = "强势观察" if coverage >= 95 else "强势观察（评分部分缺失）"
             elif item["strength_score"] >= 60:
-                item["strength_label"] = "相对偏强"
+                item["strength_label"] = "相对偏强" if coverage >= 95 else "相对偏强（评分部分缺失）"
             elif item["strength_score"] >= 40:
-                item["strength_label"] = "中性轮动"
+                item["strength_label"] = "中性轮动" if coverage >= 95 else "中性轮动（评分部分缺失）"
             else:
-                item["strength_label"] = "相对偏弱"
+                item["strength_label"] = "相对偏弱" if coverage >= 95 else "相对偏弱（评分部分缺失）"
             item["reason"] = "按当日板块涨幅为主，并在可用时纳入上涨广度、成交额及领涨股涨幅；分数仅用于同日相对比较。"
         return sorted(rows, key=lambda x: (x.get("strength_score") if x.get("strength_score") is not None else -1, x["change_percent"]), reverse=True)
 
@@ -911,6 +949,8 @@ def report():
         "date": datetime.now(TZ).strftime("%Y-%m-%d"),
         "generated_at": now_iso(),
         "freshness": freshness,
+        "market_source_diagnostics": snapshot.get("source_diagnostics") or {"checked_at": None, "attempts": [], "note": "尚无行情源诊断记录"},
+        "fetch_running": {"market": market_fetch_running, "sectors": sector_fetch_running},
         "market_status": snapshot.get("status"),
         "market_message": snapshot.get("message"),
         "indices": snapshot.get("indices"),
@@ -927,6 +967,7 @@ def report():
             "title": "当日板块相对强度评分（0-100）",
             "weights": {"板块涨幅排名": "50%", "板块上涨广度排名": "20%（字段可用时）", "成交额排名": "15%（字段可用时）", "领涨股涨幅排名": "15%（字段可用时）"},
             "warning": "只比较本次接口返回的板块横截面，不代表资金流向的精确测量，也不预测未来收益。",
+            "data_quality": "每个板块新增 score_data_quality.coverage_percent 和 missing_components；数据不完整时 strength_label 会注明评分部分缺失。",
             "theme_persistence": "持续性评分需要跨交易日历史数据；目前不以单日快照伪造持续性分数。"
         },
         "dragon_analysis_status": {
@@ -946,6 +987,27 @@ def report():
             "报告仅使用实际获取的数据，不会补造缺失行情。"
         ]
     })
+
+@app.get("/api/market-diagnostics")
+def market_diagnostics():
+    """展示市场数据源逐项尝试结果，便于区分网络失败、字段不匹配与样本不足。"""
+    with cache_lock:
+        snapshot = json.loads(json.dumps(market_cache, ensure_ascii=False, default=str))
+    return jsonify({
+        "app_version": APP_VERSION,
+        "time": now_iso(),
+        "market_status": snapshot.get("status"),
+        "market_updated_at": snapshot.get("updated_at"),
+        "market_message": snapshot.get("message"),
+        "indices": snapshot.get("indices"),
+        "breadth": snapshot.get("breadth"),
+        "amount": snapshot.get("amount"),
+        "stocks_status": (snapshot.get("stocks") or {}).get("status"),
+        "source_diagnostics": snapshot.get("source_diagnostics"),
+        "fetch_running": {"market": market_fetch_running, "sectors": sector_fetch_running},
+        "note": "本接口只读诊断，不会主动请求外部行情；请先打开 /api/market 或首页触发后台刷新。"
+    })
+
 
 @app.get("/api/test-sectors")
 def test_sectors():
