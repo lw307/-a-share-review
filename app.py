@@ -523,76 +523,72 @@ def diagnostics():
 def test_sectors():
     import akshare as ak
     import threading
+
     result = {}
+
     tests = {
-        "industry_em": "stock_board_industry_name_em",
-        "concept_em": "stock_board_concept_name_em",
-        "industry_ths": "stock_board_industry_name_ths",
+        "industry_ths_quotes": "stock_board_industry_index_ths",
+        "concept_ths_quotes": "stock_board_concept_index_ths",
+        "concept_em_quotes": "stock_board_concept_name_em",
+        "industry_ths_names": "stock_board_industry_name_ths",
     }
-    for name, func_name in tests.items():
-        result[name] = {
-            "status": "testing",
-            "message": "测试尚未完成"
-        }
-        try:
-            func = getattr(ak, func_name, None)
-            if not callable(func):
-                result[name] = {
-                    "status": "error",
-                    "message": "接口函数不存在"
-                }
-                continue
-            box = {}
-            def worker(target, output):
-                try:
-                    df = target()
-                    output["rows"] = len(df) if df is not None else 0
-                    output["columns"] = (
-                        list(df.columns) if df is not None else []
-                    )
-                    output["sample"] = (
-                        df.head(2).to_dict(orient="records")
-                        if df is not None and not df.empty
-                        else []
-                    )
-                except Exception as exc:
-                    output["error"] = (
-                        type(exc).__name__ + ": " + str(exc)[:200]
-                    )
-            thread = threading.Thread(
-                target=worker,
-                args=(func, box),
-                daemon=True
-            )
-            thread.start()
-            thread.join(timeout=8)
-            if thread.is_alive():
-                result[name] = {
-                    "status": "timeout",
-                    "message": "8秒内没有返回"
-                }
-            elif "error" in box:
-                result[name] = {
-                    "status": "error",
-                    "message": box["error"]
-                }
-            elif box.get("rows", 0) > 0:
-                result[name] = {
-                    "status": "ok",
-                    "rows": box["rows"],
-                    "columns": box["columns"],
-                    "sample": box["sample"]
-                }
-            else:
-                result[name] = {
-                    "status": "empty",
-                    "message": "接口没有返回有效数据"
-                }
-        except Exception as exc:
+
+    def test_one(name, func_name):
+        func = getattr(ak, func_name, None)
+
+        if not callable(func):
             result[name] = {
                 "status": "error",
-                "message": type(exc).__name__ + ": " + str(exc)[:200]
+                "message": "接口函数不存在"
             }
+            return
+
+        box = {}
+
+        def worker():
+            try:
+                df = func()
+
+                if df is None or df.empty:
+                    box["result"] = {
+                        "status": "empty",
+                        "message": "接口没有返回有效数据"
+                    }
+                    return
+
+                box["result"] = {
+                    "status": "ok",
+                    "rows": len(df),
+                    "columns": list(df.columns),
+                    "sample": df.head(2).to_dict(orient="records")
+                }
+
+            except Exception as exc:
+                box["result"] = {
+                    "status": "error",
+                    "message": (
+                        type(exc).__name__ + ": " + str(exc)[:200]
+                    )
+                }
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=15)
+
+        if thread.is_alive():
+            result[name] = {
+                "status": "timeout",
+                "message": "15秒内没有返回"
+            }
+        else:
+            result[name] = box.get("result", {
+                "status": "error",
+                "message": "测试没有产生结果"
+            })
+
+    for name, func_name in tests.items():
+        test_one(name, func_name)
+
     return jsonify(result)
 
 @app.get("/api/health")
