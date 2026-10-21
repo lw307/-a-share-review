@@ -1,0 +1,14 @@
+{
+  "id": "/",
+  "name": "A股复盘与模拟交易",
+  "short_name": "A股复盘",
+  "description": "沪深主板行情观察、板块强弱排名、主板强势股观察与模拟交易",
+  "start_url": "/?source=homescreen",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f2f4f8",
+  "theme_color": "#202433",
+  "icons": [
+    {"src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any"}
+  ]
+}

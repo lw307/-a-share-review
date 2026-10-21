@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-integrated-v11"
+APP_VERSION = "20261021-live-pwa-v12"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -440,7 +440,7 @@ def fetch_sector_data():
         sources = {
             # stock_board_industry_name_ths 只是行业名称列表，不能当行情榜；summary_ths 才是行情汇总。
             "industry": [
-                ("东方财富行业快照", "stock_board_industry_name_em", None),
+                ("东方财富行业实时快照", "stock_board_industry_spot_em", None),
                 ("同花顺行业实时汇总", "stock_board_industry_summary_ths", None),
             ],
             # 概念优先使用东方财富实时快照；名称清单不再作为行情来源。
@@ -608,17 +608,18 @@ def account_snapshot():
     for p in positions:
         q = quotes.get(p["code"])
         price = q["price"] if q else None
-        value = price * p["shares"] if price is not None else None
         cost = p["avg_cost"] * p["shares"]
+        # If a quote is unavailable, use cost basis as a clearly marked temporary estimate;
+        # never silently value the holding at zero, which would distort total account equity.
+        value = price * p["shares"] if price is not None else cost
         cost_value += cost
-        if value is not None:
-            market_value += value
+        market_value += value
         holdings.append({
             "code": p["code"], "name": p["name"], "shares": p["shares"],
             "avg_cost": p["avg_cost"], "latest_price": price, "market_value": value,
             "profit": (price - p["avg_cost"]) * p["shares"] if price is not None else None,
             "change_percent": ((price / p["avg_cost"]) - 1) * 100 if price is not None and p["avg_cost"] else None,
-            "quote_status": "ok" if price is not None else "unavailable"
+            "quote_status": "ok" if price is not None else "estimated_at_cost"
         })
     equity = cash + market_value
     initial = float(account["initial_cash"])
@@ -629,12 +630,22 @@ def account_snapshot():
         "return_percent": profit / initial * 100 if initial else 0,
         "positions": holdings,
         "recent_trades": [dict(t) for t in trades],
-        "message": "若持仓个股行情不可用，账户市值会暂时低估；本工具仅为模拟交易。"
+        "message": "持仓行情不可用时，暂按持仓成本估算市值并标记为估算；账户盈亏暂不计入该持仓的实时浮动盈亏。本工具仅为模拟交易。"
     }
 
 @app.get("/")
 def index():
-    return send_from_directory(str(BASE_DIR), "index.html")
+    response = send_from_directory(str(BASE_DIR), "index.html")
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+@app.get("/manifest.json")
+def web_manifest():
+    return send_from_directory(str(BASE_DIR), "manifest.json", mimetype="application/manifest+json", max_age=3600)
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    return send_from_directory(str(BASE_DIR), "apple-touch-icon.png", mimetype="image/png", max_age=86400)
 
 @app.get("/api/health")
 def health():
