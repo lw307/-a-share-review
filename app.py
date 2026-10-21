@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-sectorfix-v6"
+APP_VERSION = "20261021-sectorfix-v7"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -315,6 +315,54 @@ def sector_frame_is_snapshot(df):
         return False, "涨跌幅列没有足够的有效数值"
     return True, None
 
+def fetch_concept_direct_em():
+    """通过东方财富板块列表接口的小页快照作为备用源；仅接受真实返回的涨跌幅。"""
+    import requests
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": "1", "pz": "40", "po": "1", "np": "1", "fltt": "2", "invt": "2",
+        "fid": "f3", "fs": "m:90+t:3+f:!50",
+        "fields": "f12,f14,f3,f104,f105,f128,f136"
+    }
+    last_error = None
+    # 控制总耗时，避免 Render 免费服务的 HTTP 请求等待过久。
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                url, params=params,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36", "Referer": "https://quote.eastmoney.com/center/boardlist.html"},
+                timeout=(3, 6)
+            )
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data") or {}
+            diff = data.get("diff") or []
+            records = []
+            for item in diff:
+                name = item.get("f14")
+                change = as_float(item.get("f3"))
+                if not name or change is None:
+                    continue
+                records.append({
+                    "板块代码": item.get("f12"),
+                    "板块名称": name,
+                    "涨跌幅": change,
+                    "上涨家数": item.get("f104"),
+                    "下跌家数": item.get("f105"),
+                    "领涨股票": item.get("f128"),
+                    "领涨股票-涨跌幅": item.get("f136"),
+                    "数据来源": "东方财富概念板块列表接口（备用）"
+                })
+            if len(records) < 3:
+                raise RuntimeError(f"返回有效板块不足3条；data.total={data.get('total')}")
+            return records, None
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {str(exc)[:150]}"
+            if attempt < 1:
+                import time
+                time.sleep(0.5)
+    return [], last_error
+
 def fetch_sector_data():
     """获取板块当日快照。行业增加同花顺实时汇总兜底；概念不拿历史事件表冒充实时排名。"""
     global sector_fetch_running, sector_last_attempt
@@ -372,6 +420,15 @@ def fetch_sector_data():
                     break
                 except Exception as exc:
                     errors.append(f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:100]}")
+        # 东方财富 AKShare 包装接口失败时，使用更小分页的直接快照请求重试；不读取历史事件表。
+        if not result["concept"]:
+            direct_records, direct_error = fetch_concept_direct_em()
+            if direct_records:
+                result["concept"] = direct_records
+                source_used["concept"] = "东方财富概念板块直接快照备用（前40名）"
+            else:
+                errors.append(f"concept/direct_em_fallback：{direct_error or '无有效数据'}")
+
         available = bool(result["industry"] or result["concept"])
         both = bool(result["industry"] and result["concept"])
         if both:
@@ -780,12 +837,34 @@ def test_sectors():
             "fetch_running": {"market": market_fetch_running, "sectors": sector_fetch_running},
             "strategy": {
                 "industry": "东方财富行业快照优先；失败时使用同花顺行业实时汇总",
-                "concept": "优先尝试 stock_board_concept_spot_em；仅接受含有效当日涨跌幅的数据。名称清单、历史指数和事件表不会被当作实时排名",
+                "concept": "优先尝试 stock_board_concept_spot_em；失败后用东方财富直接接口小分页重试（前40名）；仅接受含有效当日涨跌幅的数据。名称清单、历史指数和事件表不会被当作实时排名",
             },
             "time": now_iso(),
         })
     except Exception as exc:
         return jsonify({"app_version": APP_VERSION, "error": f"{type(exc).__name__}: {str(exc)[:160]}", "time": now_iso()}), 500
+
+
+@app.get("/api/test-concept-fallback")
+def test_concept_fallback():
+    """手动测试东方财富概念板块直接快照备用源，不修改正式缓存。"""
+    try:
+        records, error = fetch_concept_direct_em()
+        valid, note = sector_frame_is_snapshot(__import__("pandas").DataFrame(records)) if records else (False, error or "无数据")
+        return jsonify({
+            "app_version": APP_VERSION,
+            "source": "Eastmoney direct concept snapshot fallback",
+            "row_count": len(records),
+            "snapshot_validation_passed": bool(valid),
+            "columns": list(records[0].keys()) if records else [],
+            "preview_first_5_rows": records[:5],
+            "validation_note": note,
+            "error": error,
+            "warning": "本端点只做诊断，不修改正式板块缓存；当前备用源只请求涨幅榜前40条。",
+            "time": now_iso(),
+        })
+    except Exception as exc:
+        return jsonify({"app_version": APP_VERSION, "error": f"{type(exc).__name__}: {str(exc)[:180]}", "time": now_iso()}), 200
 
 
 @app.get("/api/test-concept-source")
