@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-sectorfix-v8"
+APP_VERSION = "20261021-sectorfix-v9"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -775,35 +775,118 @@ def report():
                 return row[k]
         return None
     def rank(rows):
+        """Normalize sector rows without inventing unavailable breadth/leader data."""
         normalized = []
         for row in rows:
             name = field(row, ["板块名称", "名称", "板块", "行业名称", "行业", "name"])
             change = as_float(field(row, ["涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%", "涨跌幅（%）", "pct_change", "change_percent"]))
-            if name is not None and change is not None:
-                normalized.append({
-                    "name": name,
-                    "change_percent": change,
-                    "leader": field(row, ["领涨股票", "领涨股", "领涨股票名称"]),
-                    "leader_change": field(row, ["领涨股票-涨跌幅", "领涨股涨跌幅"]),
-                    "leader_code": field(row, ["领涨股票代码", "领涨股代码", "领涨股票-代码", "领涨股-代码"]),
-                })
-        return sorted(normalized, key=lambda x: x["change_percent"], reverse=True)
-    # Sector leader names are not promoted as recommendations unless a stock code is present
-    # and that code is confirmed to belong to the user's allowed Shanghai/Shenzhen main boards.
-    def validate_leaders(rows):
-        out = []
-        for row in rows:
-            item = dict(row)
-            raw_code = field(item, ["leader_code", "领涨股票代码", "领涨股代码", "领涨股票-代码", "代码", "股票代码", "code"])
-            code = normalize_stock_code(raw_code) if raw_code not in (None, "") else None
-            item["leader_code"] = code
-            item["leader_verified_main_board"] = bool(code and is_main_board_code(code))
+            if name is None or change is None:
+                continue
+            leader_code = field(row, ["领涨股票代码", "领涨股代码", "领涨股票-代码", "股票代码", "代码", "code"])
+            up_count = as_float(field(row, ["上涨家数", "上涨数量", "上涨公司数", "上涨家数(只)"]))
+            down_count = as_float(field(row, ["下跌家数", "下跌数量", "下跌公司数", "下跌家数(只)"]))
+            amount = as_float(field(row, ["总成交额", "成交额", "成交金额", "板块成交额"]))
+            normalized.append({
+                "name": str(name),
+                "change_percent": change,
+                "leader": field(row, ["领涨股票", "领涨股", "领涨股票名称", "股票名称"]),
+                "leader_change": as_float(field(row, ["领涨股票-涨跌幅", "领涨股涨跌幅", "个股-涨跌幅"])),
+                "leader_code": normalize_stock_code(leader_code) if leader_code not in (None, "") else None,
+                "up_count": up_count,
+                "down_count": down_count,
+                "amount": amount,
+                "source": field(row, ["数据来源"]) or (snapshot.get("sectors", {}).get("source_used", {}) or {}).get("concept"),
+            })
+        return normalized
+
+    def theme_group(name):
+        text = str(name or "")
+        groups = [
+            ("水产与水域", ("水产品", "水域改革", "水产", "海洋渔业")),
+            ("农牧养殖", ("猪肉", "鸡肉", "养殖", "畜禽", "生猪")),
+            ("软件与网络安全", ("国产软件", "信息安全", "网络安全", "信创", "软件服务")),
+            ("华为产业链", ("华为汽车", "华为鸿蒙", "华为概念", "华为海思", "华为算力")),
+        ]
+        for label, keys in groups:
+            if any(k in text for k in keys):
+                return label
+        return text
+
+    def score_sectors(rows):
+        """Cross-sectional, explainable score. This is a same-day strength score, not a persistence prediction."""
+        if not rows:
+            return []
+        def percentile(values, idx):
+            valid = [v for v in values if v is not None]
+            if len(valid) <= 1 or values[idx] is None:
+                return None
+            less_equal = sum(v <= values[idx] for v in valid)
+            return 100.0 * (less_equal - 1) / max(1, len(valid) - 1)
+        changes = [r.get("change_percent") for r in rows]
+        amounts = [r.get("amount") for r in rows]
+        breadths = []
+        leader_changes = [r.get("leader_change") for r in rows]
+        for r in rows:
+            up, down = r.get("up_count"), r.get("down_count")
+            breadths.append((up / (up + down) * 100) if up is not None and down is not None and up + down > 0 else None)
+        for i, item in enumerate(rows):
+            components = {"板块涨幅排名": percentile(changes, i)}
+            if breadths[i] is not None:
+                components["板块上涨广度"] = percentile(breadths, i)
+            if amounts[i] is not None:
+                components["成交额排名"] = percentile(amounts, i)
+            if leader_changes[i] is not None:
+                components["领涨股涨幅排名"] = percentile(leader_changes, i)
+            weights = {"板块涨幅排名": 0.50, "板块上涨广度": 0.20, "成交额排名": 0.15, "领涨股涨幅排名": 0.15}
+            active = [(weights[k], v) for k, v in components.items() if v is not None]
+            item["strength_score"] = round(sum(w * v for w, v in active) / sum(w for w, _ in active), 1) if active else None
+            item["score_components"] = {k: round(v, 1) if v is not None else None for k, v in components.items()}
+            item["theme_group"] = theme_group(item["name"])
+            item["leader_verified_main_board"] = bool(item.get("leader_code") and is_main_board_code(item["leader_code"]))
             if not item["leader_verified_main_board"]:
                 item["leader"] = None
                 item["leader_change"] = None
-            out.append(item)
-        return out
-    top_industry, top_concept = validate_leaders(rank(industry)[:10]), validate_leaders(rank(concept)[:10])
+            item["leader_status"] = "已核验沪深主板" if item["leader_verified_main_board"] else "未能核验为沪深主板，已隐藏"
+            if item["strength_score"] is None:
+                item["strength_label"] = "数据不足"
+            elif item["strength_score"] >= 80:
+                item["strength_label"] = "强势观察"
+            elif item["strength_score"] >= 60:
+                item["strength_label"] = "相对偏强"
+            elif item["strength_score"] >= 40:
+                item["strength_label"] = "中性轮动"
+            else:
+                item["strength_label"] = "相对偏弱"
+            item["reason"] = "按当日板块涨幅为主，并在可用时纳入上涨广度、成交额及领涨股涨幅；分数仅用于同日相对比较。"
+        return sorted(rows, key=lambda x: (x.get("strength_score") if x.get("strength_score") is not None else -1, x["change_percent"]), reverse=True)
+
+    ranked_industry = score_sectors(rank(industry))
+    ranked_concept = score_sectors(rank(concept))
+    # Keep legacy TOP10 sorted by raw daily change for the existing homepage;
+    # the new score-sorted rankings are exposed separately for the next UI update.
+    top_industry = sorted(ranked_industry, key=lambda x: x["change_percent"], reverse=True)[:10]
+    top_concept = sorted(ranked_concept, key=lambda x: x["change_percent"], reverse=True)[:10]
+
+    # Global main-board strength watchlist is explicitly NOT represented as sector dragon 2/3,
+    # because the snapshot does not contain reliable sector-membership mapping.
+    stock_rows = snapshot.get("stocks", {}).get("data") or []
+    main_board_watchlist = []
+    for stock in stock_rows:
+        code = normalize_stock_code(stock.get("代码") or stock.get("股票代码") or stock.get("code"))
+        name = str(stock.get("名称") or stock.get("股票简称") or stock.get("name") or "")
+        change = as_float(stock.get("涨跌幅") or stock.get("涨幅") or stock.get("change_percent"))
+        price = as_float(stock.get("最新价") or stock.get("最新") or stock.get("现价"))
+        amount = as_float(stock.get("成交额") or stock.get("成交金额") or stock.get("amount"))
+        if not is_main_board_code(code) or change is None or not name or "ST" in name.upper() or "退" in name:
+            continue
+        main_board_watchlist.append({
+            "code": code, "name": name, "change_percent": change, "latest_price": price,
+            "amount": amount, "type": "全市场主板强势观察股，不代表任何板块的龙二/龙三",
+            "reason": "当日主板快照涨幅靠前；需进一步核对题材归属、成交结构、位置和次日风险。",
+            "risk": "不因单日涨幅直接追高；确认板块共振、量价和计划内风险后再考虑。"
+        })
+    main_board_watchlist.sort(key=lambda x: (x["change_percent"], x["amount"] or 0), reverse=True)
+    main_board_watchlist = main_board_watchlist[:10]
     def age_seconds(iso_value):
         if not iso_value:
             return None
@@ -836,12 +919,29 @@ def report():
         "limit_stats": snapshot.get("limit_stats"),
         "industry_top10": top_industry,
         "concept_top10": top_concept,
+        "industry_strength_ranked": ranked_industry[:30],
+        "concept_strength_ranked": ranked_concept[:30],
+        "main_board_watchlist": main_board_watchlist,
+        "main_board_watchlist_count": len(main_board_watchlist),
+        "sector_scoring_method": {
+            "title": "当日板块相对强度评分（0-100）",
+            "weights": {"板块涨幅排名": "50%", "板块上涨广度排名": "20%（字段可用时）", "成交额排名": "15%（字段可用时）", "领涨股涨幅排名": "15%（字段可用时）"},
+            "warning": "只比较本次接口返回的板块横截面，不代表资金流向的精确测量，也不预测未来收益。",
+            "theme_persistence": "持续性评分需要跨交易日历史数据；目前不以单日快照伪造持续性分数。"
+        },
+        "dragon_analysis_status": {
+            "dragon1": "仅在接口提供股票代码且代码属于沪深主板时展示经核验领涨股。",
+            "dragon2_dragon3": "当前板块快照不含完整成分股映射，暂不编造龙二、龙三；全市场强势观察股另列 main_board_watchlist。"
+        },
         "notes": [
             "板块排名依据通过字段校验的当日行情快照；行业板块可使用同花顺实时汇总兜底，盘中数据不等于收盘排名。",
             "若概念板块接口不可用，概念榜会明确留空；不会把同花顺历史概念事件表或名称列表误当成当日涨幅排名。",
             "板块接口返回的领涨股只有在返回股票代码且确认属于沪深主板时才显示；无法核验的领涨股会留空，避免把创业板、科创板或北交所个股混入候选。",
             "超过30分钟的数据会标记为可能过期；生成时间不代表行情时间，盘中快照不等于收盘数据。",
             "概念板块备用源必须提供有效的当日涨跌幅；同花顺名称清单或历史指数序列不会被伪装成实时概念排名。",
+            "v9新增当日板块相对强度评分及主题归类提示；同名/相近题材只做归类提示，不擅自合并原始板块。",
+            "全市场主板强势观察榜只依据主板个股快照排序，不代表其属于对应板块的龙二/龙三，也不是自动买入建议。",
+            "当前数据源不含完整的板块成分股映射和跨日历史，无法可靠给出每个板块的龙二/龙三及主线持续性分数；缺失内容会明确说明。",
             "涨跌停数量如标注为估算，不能当作交易所官方精确统计。",
             "报告仅使用实际获取的数据，不会补造缺失行情。"
         ]
