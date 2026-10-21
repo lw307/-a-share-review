@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-mainboard-v15"
+APP_VERSION = "20261021-mainboard-v16"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -979,12 +979,15 @@ def report():
             item["verified_leaders"].append({"name": row["leader"], "code": row["leader_code"], "change_percent": row.get("leader_change"), "sector": row["name"]})
     theme_strength_ranked = []
     for item in grouped.values():
-        item["score"] = round(sum(item["scores"]) / len(item["scores"]), 1) if item["scores"] else None
+        # Use the strongest constituent score rather than averaging many overlapping tags;
+        # this avoids a theme being boosted merely because it has more similarly named concepts.
+        item["score"] = round(max(item["scores"]), 1) if item["scores"] else None
         item["average_change_percent"] = round(sum(item["changes"]) / len(item["changes"]), 3) if item["changes"] else None
         item["constituent_count"] = len(item["constituent_sectors"])
         item["constituent_sectors"] = item["constituent_sectors"][:8]
         item["verified_leaders"] = sorted(item["verified_leaders"], key=lambda x: x.get("change_percent") if x.get("change_percent") is not None else -999, reverse=True)[:3]
-        item["interpretation"] = "归并观察值，不是独立资金流指标；组成概念可能重叠，不能将分数理解为主线持续性预测。"
+        item["grouping_method"] = "组内最高单板块评分；不因概念标签数量叠加加分"
+        item["interpretation"] = "归并观察值，不是独立资金流指标；概念可能重叠。组内最高分只代表最强组成板块，不代表整条主线的广度或持续性。"
         theme_strength_ranked.append(item)
     theme_strength_ranked.sort(key=lambda x: (x["score"] if x["score"] is not None else -1, x["average_change_percent"] if x["average_change_percent"] is not None else -999), reverse=True)
 
@@ -1007,9 +1010,11 @@ def report():
             continue
         main_board_watchlist.append({
             "code": code, "name": name, "change_percent": change, "latest_price": price,
-            "amount": amount, "type": "全市场主板强势观察股，不代表任何板块的龙二/龙三",
-            "reason": "当日主板快照涨幅靠前；需进一步核对题材归属、成交结构、位置和次日风险。",
-            "risk": "不因单日涨幅直接追高；确认板块共振、量价和计划内风险后再考虑。"
+            "amount": amount, "type": "情绪强势观察（仅单日快照，非趋势确认）",
+            "candidate_class": "单日强势观察",
+            "reason": "仅按当前主板快照涨幅及可用成交额排序；没有足够历史K线时，不判定为趋势龙头。",
+            "trend_status": "待历史K线与多日量价确认",
+            "risk": "单日涨幅不能证明持续性；不因涨幅靠前直接追高，需核验板块共振、量价、位置及退出条件。"
         })
     main_board_watchlist.sort(key=lambda x: (x["change_percent"], x["amount"] or 0), reverse=True)
     main_board_watchlist = main_board_watchlist[:10]
@@ -1199,7 +1204,9 @@ def report():
             "warning": "只比较本次接口返回的板块横截面，不代表资金流向的精确测量，也不预测未来收益。",
             "data_quality": "每个板块新增 score_data_quality.coverage_percent 和 missing_components；数据不完整时 strength_label 会注明评分部分缺失。",
             "theme_persistence": "持续性评分需要跨交易日历史数据；目前不以单日快照伪造持续性分数。",
-            "theme_grouping": "v15 新增主线归并观察：对相关概念做分组展示，采用组内可用板块评分均值；这不是独立资金流指标，组内概念可能重叠。"
+            "theme_grouping": "v16 主线归并采用组内最高单板块评分，避免因相似概念标签较多而抬高分数；它不代表整条主线广度或持续性。",
+            "leader_classification": "单日快照只生成情绪强势观察；没有历史K线与可靠成分股映射时，不冒称趋势龙头，也不虚构板块龙二/龙三。",
+            "main_board_filter": "最终观察名单只保留沪市600/601/603/605和深市000/001/002/003代码，并排除ST及退市标记。"
         },
         "dragon_analysis_status": {
             "dragon1": "仅在接口提供股票代码且代码属于沪深主板时展示经核验领涨股。",
