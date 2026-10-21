@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-mainboard-v13"
+APP_VERSION = "20261021-mainboard-v14"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -1004,7 +1004,7 @@ def report():
     }
     report_date = datetime.now(TZ).strftime("%Y-%m-%d")
     # Avoid turning stale quotes/weekends into fake daily history records. Holidays still require manual data-date verification.
-    record_history_today = (not market_stale and datetime.now(TZ).weekday() < 5)
+    record_history_today = (not freshness["market_is_stale"] and datetime.now(TZ).weekday() < 5)
     if record_history_today:
         save_daily_research_history(report_date, ranked_industry, ranked_concept, stock_rows)
     history_dates, sector_history, stock_history, trade_history, equity_history = load_history(report_date)

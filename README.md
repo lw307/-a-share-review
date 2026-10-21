@@ -1,6 +1,11 @@
-# A股复盘与模拟交易 v13
+# A股复盘与模拟交易 v14
 
-版本：`20261021-mainboard-v13`
+版本：`20261021-mainboard-v14`
+
+## v14 修复与功能说明
+
+- 修复 `/api/report` 因 `market_stale` 在赋值前被引用导致的 `UnboundLocalError`。历史记录是否写入直接使用已计算的 `freshness["market_is_stale"]`。
+- v13 的其他功能保持不变。
 
 ## v13 新增重点
 - **市场情绪评分与不开仓纪律**：综合上涨/下跌家数、指数表现、涨停/跌停估算和数据覆盖率。情绪偏弱、数据覆盖不足或行情过期时，明确提示“明日不开新仓”；只作风险纪律提示，不是经过回测的预测模型。
@@ -34,7 +39,7 @@
 1. 打开仓库 `https://github.com/lw307/-a-share-review`。
 2. 在仓库根目录上传并覆盖 `app.py`、`index.html`、`requirements.txt`、`render.yaml`、`README.md`，并新增 `manifest.json`、`apple-touch-icon.png`。
 3. Commit changes，等待 Render 自动部署。
-4. 打开 `https://a-share-review.onrender.com/api/health`，确认 `version` 为 `20261021-mainboard-v13`。
+4. 打开 `https://a-share-review.onrender.com/api/health`，确认 `version` 为 `20261021-mainboard-v14`。
 5. 打开首页并等待数据抓取；首次启动/免费实例唤醒可能需要等待。
 
 ## API
