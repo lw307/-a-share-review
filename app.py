@@ -108,11 +108,7 @@ def unavailable(reason):
     }
 
 def fetch_indices():
-    """
-    获取真实指数行情。
-    优先尝试东方财富，失败后尝试新浪财经。
-    修复 DataFrame 条件判断错误，并优先匹配常用指数。
-    """
+    """获取真实指数行情；优先东方财富，缺失时尝试新浪补齐。"""
     global fetch_running, last_attempt
 
     if not fetch_lock.acquire(blocking=False):
@@ -129,151 +125,171 @@ def fetch_indices():
         import pandas as pd
         import math
 
-        # 优先尝试东方财富，失败后尝试新浪财经
-        try:
-            df = ak.stock_zh_index_spot_em()
-            source_name = "东方财富"
-        except Exception as em_exc:
+        target_codes = {
+            "000001", "399001", "399006",
+            "000300", "000016", "000905"
+        }
+
+        target_names = {
+            "上证指数", "上证综指", "深证成指",
+            "沪深300", "上证50", "中证500"
+        }
+
+        frames = []
+        errors = []
+
+        # 分别尝试两个数据源，避免一个数据源缺少指数时直接放弃。
+        sources = [
+            ("东方财富", ak.stock_zh_index_spot_em),
+            ("新浪财经", ak.stock_zh_index_spot_sina),
+        ]
+
+        for source_name, source_func in sources:
             try:
-                df = ak.stock_zh_index_spot_sina()
-                source_name = "新浪财经"
-            except Exception as sina_exc:
-                raise RuntimeError(
-                    f"东方财富接口失败：{str(em_exc)[:100]}；"
-                    f"新浪财经接口失败：{str(sina_exc)[:100]}"
-                ) from sina_exc
+                df = source_func()
 
-        if df is None or df.empty:
-            raise ValueError("指数接口没有返回有效数据")
+                if df is None or df.empty:
+                    errors.append(f"{source_name}返回空数据")
+                    continue
 
-        # 兼容不同数据源的字段名称
+                code_col = next(
+                    (
+                        c for c in ["代码", "指数代码", "symbol", "code"]
+                        if c in df.columns
+                    ),
+                    None
+                )
+
+                name_col = next(
+                    (
+                        c for c in ["名称", "指数名称", "name"]
+                        if c in df.columns
+                    ),
+                    None
+                )
+
+                selected = df.copy()
+
+                if code_col:
+                    codes = (
+                        selected[code_col]
+                        .astype(str)
+                        .str.strip()
+                        .str.replace(r"\.0$", "", regex=True)
+                        .str.replace(r"^(sh|sz|SH|SZ)", "", regex=True)
+                    )
+
+                    mask = codes.isin(target_codes)
+
+                    if name_col:
+                        names = selected[name_col].astype(str)
+                        mask = mask | names.apply(
+                            lambda n: any(x in n for x in target_names)
+                        )
+
+                    selected = selected.loc[mask].copy()
+
+                elif name_col:
+                    names = selected[name_col].astype(str)
+                    selected = selected.loc[
+                        names.apply(
+                            lambda n: any(x in n for x in target_names)
+                        )
+                    ].copy()
+                else:
+                    errors.append(f"{source_name}缺少指数代码和名称字段")
+                    continue
+
+                if not selected.empty:
+                    selected["_数据源"] = source_name
+                    frames.append(selected)
+
+            except Exception as exc:
+                errors.append(
+                    f"{source_name}：{type(exc).__name__}: {str(exc)[:100]}"
+                )
+
+        if not frames:
+            raise RuntimeError("；".join(errors) or "两个指数数据源均未返回有效数据")
+
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+
+        # 根据代码或名称去重，优先保留东方财富记录。
         code_col = next(
             (
-                col for col in ["代码", "指数代码", "symbol", "code"]
-                if col in df.columns
+                c for c in ["代码", "指数代码", "symbol", "code"]
+                if c in combined.columns
             ),
             None
         )
 
         name_col = next(
             (
-                col for col in ["名称", "指数名称", "name"]
-                if col in df.columns
+                c for c in ["名称", "指数名称", "name"]
+                if c in combined.columns
             ),
             None
         )
 
-        # 先按指数代码筛选
-        target_codes = {
-            "000001", "399001", "399006",
-            "000300", "000016", "000905"
-        }
-
-        selected_frames = []
-
-        if code_col is not None:
-            codes = (
-                df[code_col]
+        if code_col:
+            combined["_匹配代码"] = (
+                combined[code_col]
                 .astype(str)
                 .str.strip()
                 .str.replace(r"\.0$", "", regex=True)
+                .str.replace(r"^(sh|sz|SH|SZ)", "", regex=True)
+            )
+            combined = combined.drop_duplicates(
+                subset=["_匹配代码"], keep="first"
+            )
+        elif name_col:
+            combined = combined.drop_duplicates(
+                subset=[name_col], keep="first"
             )
 
-            # 兼容 sh000001、sz399001 等代码格式
-            codes = codes.str.replace(
-                r"^(sh|sz|SH|SZ)", "", regex=True
-            )
-
-            code_mask = codes.isin(target_codes)
-            code_matches = df.loc[code_mask].copy()
-
-            if not code_matches.empty:
-                selected_frames.append(code_matches)
-
-        # 再按指数名称筛选
-        target_names = [
-            "上证指数",
-            "上证综指",
-            "深证成指",
-            "沪深300",
-            "上证50",
-            "中证500"
-        ]
-
-        if name_col is not None:
-            names = df[name_col].astype(str)
-
-            name_mask = names.apply(
-                lambda name: any(
-                    target in name for target in target_names
-                )
-            )
-
-            name_matches = df.loc[name_mask].copy()
-
-            if not name_matches.empty:
-                selected_frames.append(name_matches)
-
-        # 合并筛选结果；没有匹配到时保留完整真实数据供排查
-        if selected_frames:
-            selected = pd.concat(
-                selected_frames,
-                ignore_index=True
-            ).drop_duplicates()
-        else:
-            selected = df.copy()
-
-        # 转成可供 JSON 返回的数据，避免 NaN 等值引发问题
-        records = selected.to_dict(orient="records")
+        # 清理内部辅助字段，转换为可返回的 JSON 数据。
+        records = combined.to_dict(orient="records")
         clean_records = []
 
         for record in records:
-            clean_record = {}
+            clean = {}
 
             for key, value in record.items():
+                if key.startswith("_"):
+                    continue
+
                 try:
                     if value is None:
-                        clean_record[key] = None
+                        clean[key] = None
                     elif hasattr(value, "item"):
                         value = value.item()
-
-                        if (
-                            isinstance(value, float)
-                            and not math.isfinite(value)
-                        ):
+                        if isinstance(value, float) and not math.isfinite(value):
                             value = None
-
-                        clean_record[key] = value
-
-                    elif (
-                        isinstance(value, float)
-                        and not math.isfinite(value)
-                    ):
-                        clean_record[key] = None
-
+                        clean[key] = value
+                    elif isinstance(value, float) and not math.isfinite(value):
+                        clean[key] = None
                     else:
-                        clean_record[key] = value
-
+                        clean[key] = value
                 except Exception:
-                    clean_record[key] = str(value)
+                    clean[key] = str(value)
 
-            clean_records.append(clean_record)
+            clean_records.append(clean)
 
         with cache_lock:
             market_cache["indices"] = {
                 "status": "ok",
                 "data": clean_records,
                 "message": (
-                    f"{source_name}指数数据已获取，"
-                    f"返回{len(clean_records)}条记录"
+                    f"指数行情已获取，共{len(clean_records)}条记录；"
+                    "请核对是否包含深证成指。"
                 )
             }
 
             market_cache["updated_at"] = current_time()
             market_cache["status"] = "partial"
             market_cache["message"] = (
-                "指数数据已更新；成交额、市场涨跌家数及"
-                "涨停跌停统计仍需单独接入。"
+                "指数行情已更新；成交额、市场涨跌家数及"
+                "涨停跌停统计仍需接入。"
             )
 
     except Exception as exc:
