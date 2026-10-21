@@ -255,7 +255,7 @@ def start_background_fetch():
     thread.start()
 
 def fetch_sectors():
-    # Fetch industry sector list using Tonghuashun
+    """获取行业板块列表和概念板块行情。"""
     global last_sector_attempt
 
     if not sector_lock.acquire(blocking=False):
@@ -263,6 +263,7 @@ def fetch_sectors():
 
     try:
         last_sector_attempt = datetime.now(TZ).timestamp()
+
         import akshare as ak
 
         result = {
@@ -271,15 +272,15 @@ def fetch_sectors():
         }
         errors = []
 
-        # 优先使用已验证可用的同花顺行业板块接口
+        # 1. 获取同花顺行业板块列表
         try:
-            df = ak.stock_board_industry_name_ths()
+            df_industry = ak.stock_board_industry_name_ths()
 
-            if df is None or df.empty:
-                raise ValueError("同花顺没有返回有效行业板块数据")
+            if df_industry is None or df_industry.empty:
+                raise ValueError("没有返回有效行业板块数据")
 
             result["industry"] = json.loads(
-                df.to_json(
+                df_industry.to_json(
                     orient="records",
                     force_ascii=False
                 )
@@ -287,33 +288,67 @@ def fetch_sectors():
 
         except Exception as exc:
             errors.append(
-                "同花顺行业板块: "
+                "同花顺行业板块："
                 + type(exc).__name__
                 + ": "
                 + str(exc)[:120]
             )
 
+        # 2. 获取已经通过测试的东方财富概念板块行情
+        try:
+            df_concept = ak.stock_board_concept_name_em()
+
+            if df_concept is None or df_concept.empty:
+                raise ValueError("没有返回有效概念板块行情")
+
+            result["concept"] = json.loads(
+                df_concept.to_json(
+                    orient="records",
+                    force_ascii=False
+                )
+            )
+
+        except Exception as exc:
+            errors.append(
+                "东方财富概念板块："
+                + type(exc).__name__
+                + ": "
+                + str(exc)[:120]
+            )
+
+        # 3. 根据实际获取结果确定状态
         available = [
             key for key in ("industry", "concept")
             if result[key]
         ]
 
+        if len(available) == 2:
+            status = "ok"
+            message = (
+                "行业板块列表和概念板块行情均已获取；"
+                "行业板块实时行情仍需单独接入"
+            )
+
+        elif available:
+            status = "partial"
+            message = (
+                "部分板块数据已获取；"
+                + "；".join(errors)
+            )
+
+        else:
+            status = "unavailable"
+            message = (
+                "板块数据获取失败："
+                + "；".join(errors)
+            )
+
         with cache_lock:
-            if available:
-                market_cache["sectors"] = {
-                    "status": "partial",
-                    "data": result,
-                    "message": (
-                        "已获取同花顺行业板块列表；"
-                        "板块实时行情和概念板块数据尚未完成接入"
-                    )
-                }
-            else:
-                market_cache["sectors"] = {
-                    "status": "unavailable",
-                    "data": None,
-                    "message": "板块获取失败：" + "；".join(errors)
-                }
+            market_cache["sectors"] = {
+                "status": status,
+                "data": result if available else None,
+                "message": message
+            }
 
             market_cache["updated_at"] = current_time()
 
