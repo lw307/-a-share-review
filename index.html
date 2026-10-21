@@ -1,1 +1,443 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#222234"><title>A股每日复盘</title><style>*{box-sizing:border-box}body{margin:0;background:#f1f3f7;color:#222737;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.app{max-width:850px;margin:auto;padding-bottom:80px}.hero{background:#222234;color:white;padding:22px 18px}.hero h1{font-size:23px;margin:0 0 12px}.meta{font-size:12px;color:#b5b8c5;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.alert{margin:12px;background:#fff3e3;color:#855000;border:1px solid #ffdfb5;border-radius:14px;padding:13px;font-size:13px;line-height:1.6}.card{margin:12px;background:white;border-radius:18px;padding:16px;box-shadow:0 4px 15px #20263a0a}.card h2{font-size:17px;margin:0 0 14px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}.tile{background:#f7f8fb;border-radius:12px;padding:12px}.label{font-size:12px;color:#8991a2}.value{font-size:19px;font-weight:750;margin:7px 0}.hint{font-size:11px;color:#8991a2;line-height:1.5}.dark{background:linear-gradient(120deg,#20202a,#392a20);color:white;display:flex;justify-content:space-between;gap:10px;align-items:center}.dark .value{font-size:25px}.right{text-align:right}.nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:min(850px,100%);display:flex;justify-content:space-around;background:#fffffff0;border-top:1px solid #e5e8ee;padding:10px 0 calc(10px + env(safe-area-inset-bottom))}.nav a{text-decoration:none;color:#8991a2;font-size:11px;text-align:center}.nav b{display:block;font-size:19px;margin-bottom:3px}.nav a.active{color:#e83b3b}.section{display:none}.section.active{display:block}.note{font-size:13px;line-height:1.75;color:#70798a}.status{display:inline-block;border-radius:20px;padding:5px 9px;background:#edf7f2;color:#18875f;font-size:12px}</style></head><body><div class="app"><header class="hero"><h1>🟡 A股每日复盘</h1><div class="meta"><span id="date">日期：读取中</span><span id="clock">云端服务：检查中</span></div></header><div class="alert"><b>数据诚信提示：</b>当前为基础版，尚未接入真实行情。不会用示例数值冒充当日数据。</div><main id="overview" class="section active"><div class="card dark"><div><div class="label" style="color:#c4c5ce">模拟账户 · 初始资金 ¥50,000</div><div class="value">¥50,000.00</div><div class="hint" style="color:#c4c5ce">现金 ¥50,000 · 持仓 0 只 · 市值 ¥0</div></div><div class="right"><div class="label" style="color:#c4c5ce">累计收益</div><div class="value" style="color:#ff7777">+0.00%</div><div class="hint" style="color:#c4c5ce">初始状态</div></div></div><div class="card"><h2>市场环境</h2><div class="grid"><div class="tile"><div class="label">两市成交额</div><div class="value">待接入</div><div class="hint">真实行情接口</div></div><div class="tile"><div class="label">上涨 / 下跌</div><div class="value">待核验</div><div class="hint">全市场统计</div></div><div class="tile"><div class="label">涨停 / 跌停</div><div class="value">待核验</div><div class="hint">统一统计口径</div></div><div class="tile"><div class="label">连板高度</div><div class="value">待核验</div><div class="hint">按交易日计算</div></div></div></div><div class="card"><h2>系统状态</h2><p><span class="status" id="health">正在检查服务…</span></p><p class="note" id="healthText">正在连接后端。</p></div><div class="card"><h2>板块强弱排名</h2><p class="note">接入并核验行情后，将综合板块涨幅、涨停家数、成交额变化、龙头表现及近3至5个交易日持续性评分。</p></div></main><main id="sectors" class="section"><div class="card"><h2>🧩 板块强弱</h2><p class="note">待接入真实行情后展示板块排名、持续性评分、涨停梯队和主要风险。</p></div></main><main id="leaders" class="section"><div class="card"><h2>🐉 龙头梯队</h2><p class="note">后续展示龙一、龙二、龙三，附连板高度、封板时间、成交额、换手、板块带动和催化依据。未核验行情时不虚构排名。</p></div></main><main id="picks" class="section"><div class="card"><h2>🎯 主板趋势选股</h2><p class="note">仅筛选沪深主板，研究箱体突破、趋势回调后转强和潜在启动形态。每个候选附底层逻辑、关键价位、失效条件和风险提示。</p></div><div class="card"><h2>风险规则</h2><p class="note"><b>市场退潮或主线持续性评分低于40分时：今日不开新仓。</b></p></div></main><main id="simulation" class="section"><div class="card"><h2>💰 模拟账户</h2><div class="grid"><div class="tile"><div class="label">初始资金</div><div class="value">¥50,000</div></div><div class="tile"><div class="label">单只仓位上限</div><div class="value">¥10,000</div></div></div><p class="note">当前为账户规则展示页，尚未实现持仓保存、费用结算和收益曲线。后续将补充佣金万0.8、单笔最低5元及适用税费。</p></div></main><main id="news" class="section"><div class="card"><h2>📰 新闻与公告</h2><p class="note">后续接入可核验公告来源，显示发布时间、来源及与题材的关联；传闻不直接作为买入理由。</p></div></main><main id="review" class="section"><div class="card"><h2>📝 历史复盘</h2><p class="note">后续保存每日报告与候选股表现，跟踪次日、第三个交易日结果，评估胜率、盈亏比和最大回撤。</p></div></main><div class="card note">研究与模拟用途，不构成投资建议，不承诺盈利。不连接券商，不自动下达真实交易指令。</div><nav class="nav"><a class="active" href="#" data-id="overview"><b>📊</b>概览</a><a href="#" data-id="sectors"><b>🧩</b>板块</a><a href="#" data-id="leaders"><b>🐉</b>龙头</a><a href="#" data-id="picks"><b>🎯</b>选股</a><a href="#" data-id="simulation"><b>💰</b>模拟</a><a href="#" data-id="news"><b>📰</b>新闻</a><a href="#" data-id="review"><b>📝</b>复盘</a></nav></div><script>const d=new Date();document.getElementById('date').textContent='日期：'+d.toLocaleDateString('zh-CN');document.querySelectorAll('.nav a').forEach(a=>a.onclick=e=>{e.preventDefault();document.querySelectorAll('.nav a').forEach(x=>x.classList.toggle('active',x===a));document.querySelectorAll('.section').forEach(x=>x.classList.toggle('active',x.id===a.dataset.id));window.scrollTo(0,0)});fetch('/api/health').then(r=>r.json()).then(j=>{document.getElementById('health').textContent='后端运行正常';document.getElementById('clock').textContent='服务已连接';document.getElementById('healthText').textContent='服务时间：'+j.time+'。'+j.note}).catch(()=>{document.getElementById('health').textContent='尚未连接云端';document.getElementById('healthText').textContent='部署后会自动检查服务。'});</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#222234">
+<title>A股每日复盘</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f1f3f7;color:#222737;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+.app{max-width:850px;margin:auto;padding-bottom:85px}
+.hero{background:#222234;color:white;padding:22px 18px}
+.hero h1{font-size:23px;margin:0 0 12px}
+.meta{font-size:12px;color:#b5b8c5;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.alert{margin:12px;background:#fff3e3;color:#855000;border:1px solid #ffdfb5;border-radius:14px;padding:13px;font-size:13px;line-height:1.6}
+.card{margin:12px;background:white;border-radius:18px;padding:16px;box-shadow:0 4px 15px #20263a0a}
+.card h2{font-size:17px;margin:0 0 14px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.tile{background:#f7f8fb;border-radius:12px;padding:12px;min-width:0}
+.label{font-size:12px;color:#8991a2}
+.value{font-size:19px;font-weight:750;margin:7px 0;overflow-wrap:anywhere}
+.hint{font-size:11px;color:#8991a2;line-height:1.5}
+.dark{background:linear-gradient(120deg,#20202a,#392a20);color:white;display:flex;justify-content:space-between;gap:10px;align-items:center}
+.dark .value{font-size:23px}
+.right{text-align:right}
+.nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:min(850px,100%);display:flex;justify-content:space-around;background:#fffffff5;border-top:1px solid #e5e8ee;padding:9px 0 calc(9px + env(safe-area-inset-bottom));z-index:10}
+.nav a{text-decoration:none;color:#8991a2;font-size:10px;text-align:center;flex:1;min-width:0}
+.nav b{display:block;font-size:18px;margin-bottom:3px}
+.nav a.active{color:#e83b3b}
+.section{display:none}
+.section.active{display:block}
+.note{font-size:13px;line-height:1.75;color:#70798a}
+.status{display:inline-block;border-radius:20px;padding:5px 9px;background:#edf7f2;color:#18875f;font-size:12px}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}
+th,td{padding:11px 7px;text-align:left;border-bottom:1px solid #edf0f4}
+th{color:#8991a2;font-weight:500;background:#fafbfc}
+.up{color:#e83b3b}
+.down{color:#16875b}
+.neutral{color:#8991a2}
+.rank{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:#f0f2f6;font-weight:700}
+.rank.top{background:#fff0e9;color:#e85a35}
+.row-title{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px}
+.row-title h2{margin:0}
+button{border:0;border-radius:9px;background:#f0f2f6;padding:8px 12px;color:#394150;font-size:12px}
+.loading,.empty{padding:18px 8px;text-align:center;color:#8991a2;font-size:13px;line-height:1.7}
+@media(min-width:600px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+</style>
+</head>
+
+<body>
+<div class="app">
+
+<header class="hero">
+<h1>📊 A股每日复盘</h1>
+<div class="meta">
+<span id="date">日期：读取中</span>
+<span id="clock">云端服务：连接中</span>
+</div>
+</header>
+
+<div class="alert" id="dataAlert">
+<b>行情状态：</b>正在连接真实行情接口……
+</div>
+
+<main id="overview" class="section active">
+
+<div class="card dark">
+<div>
+<div class="label" style="color:#c4c5ce">模拟账户 · 初始资金 ¥50,000</div>
+<div class="value">¥50,000.00</div>
+<div class="hint" style="color:#c4c5ce">现金 ¥50,000 · 持仓 0 只 · 市值 ¥0</div>
+</div>
+<div class="right">
+<div class="label" style="color:#c4c5ce">累计收益</div>
+<div class="value neutral">暂未计算</div>
+<div class="hint" style="color:#c4c5ce">模拟交易功能待完善</div>
+</div>
+</div>
+
+<div class="card">
+<h2>📈 市场环境</h2>
+<div class="grid">
+<div class="tile">
+<div class="label">上证指数</div>
+<div class="value" id="shIndex">--</div>
+<div class="hint" id="shChange">等待行情</div>
+</div>
+<div class="tile">
+<div class="label">深证成指</div>
+<div class="value" id="szIndex">--</div>
+<div class="hint" id="szChange">等待行情</div>
+</div>
+<div class="tile">
+<div class="label">两市成交额</div>
+<div class="value" id="marketAmount">暂不可用</div>
+<div class="hint">以后台实际返回为准</div>
+</div>
+<div class="tile">
+<div class="label">涨停 / 跌停</div>
+<div class="value" id="limitStats">暂不可用</div>
+<div class="hint">等待统计接口</div>
+</div>
+</div>
+<p class="note" id="marketSummary">正在读取市场数据。</p>
+</div>
+
+<div class="card">
+<div class="row-title">
+<h2>🔥 今日板块强弱 TOP 10</h2>
+<button onclick="loadMarket()">刷新行情</button>
+</div>
+<div id="overviewSectors" class="loading">正在获取板块数据……</div>
+<p class="hint" id="overviewUpdated"></p>
+</div>
+
+<div class="card">
+<h2>🖥️ 系统状态</h2>
+<p><span class="status" id="health">正在检查服务</span></p>
+<p class="note" id="healthText">正在连接后台服务。</p>
+</div>
+</main>
+
+<main id="sectors" class="section">
+<div class="card">
+<div class="row-title">
+<h2>🧩 板块强弱排名</h2>
+<button onclick="loadMarket()">刷新</button>
+</div>
+<p class="note">根据后台实际返回的板块涨跌幅排序。盘中数据不等于最终收盘排名。</p>
+<div id="allSectors" class="loading">正在获取板块数据……</div>
+<p class="hint" id="sectorsUpdated"></p>
+</div>
+</main>
+
+<main id="leaders" class="section">
+<div class="card">
+<h2>🐉 板块领涨股观察</h2>
+<p class="note">展示行情接口返回的板块领涨股，不直接认定为市场龙一、龙二、龙三。判断真正的龙头还需结合连板、成交额、换手、封板质量和板块带动性。</p>
+<div id="leaderList" class="loading">正在读取领涨股……</div>
+</div>
+</main>
+
+<main id="picks" class="section">
+<div class="card">
+<h2>🎯 主板趋势选股</h2>
+<p class="note">当前尚未接入完整的个股筛选和技术指标计算，暂不自动生成买入名单。</p>
+<div class="tile">
+<div class="label">重点观察形态</div>
+<p class="note">① 箱体放量突破；② 趋势龙头回调后重新转强；③ 主线板块内相对强势、尚未明显加速的个股。</p>
+</div>
+<div class="tile" style="margin-top:10px">
+<div class="label">风险规则</div>
+<p class="note">5万元账户的单笔风险预算应提前设定，并根据买入价、止损价和仓位计算。不能把5%的账户亏损上限当作每笔都应承担的风险。</p>
+</div>
+</div>
+</main>
+
+<main id="simulation" class="section">
+<div class="card">
+<h2>💰 模拟账户</h2>
+<div class="grid">
+<div class="tile"><div class="label">初始资金</div><div class="value">¥50,000</div></div>
+<div class="tile"><div class="label">单只仓位上限</div><div class="value">¥10,000</div></div>
+<div class="tile"><div class="label">当前持仓</div><div class="value">0 只</div></div>
+<div class="tile"><div class="label">账户收益</div><div class="value">待实现</div></div>
+</div>
+<p class="note">持仓保存、模拟委托、费用结算和收益曲线尚未实现。本页面不连接券商，不会执行真实交易。</p>
+</div>
+</main>
+
+<main id="news" class="section">
+<div class="card">
+<h2>📰 新闻与公告</h2>
+<p class="note">新闻模块尚未接入。后续需要展示可核验来源、发布时间和公告原文。</p>
+</div>
+</main>
+
+<main id="review" class="section">
+<div class="card">
+<h2>📝 历史复盘</h2>
+<p class="note">历史报告保存和次日、第三个交易日表现追踪尚未实现。</p>
+</div>
+</main>
+
+<div class="card note">
+本页面用于行情观察与模拟研究，不构成投资建议，不承诺盈利。历史表现不代表未来收益。
+</div>
+
+<nav class="nav">
+<a class="active" href="#" data-id="overview"><b>📊</b>概览</a>
+<a href="#" data-id="sectors"><b>🧩</b>板块</a>
+<a href="#" data-id="leaders"><b>🐉</b>领涨股</a>
+<a href="#" data-id="picks"><b>🎯</b>选股</a>
+<a href="#" data-id="simulation"><b>💰</b>模拟</a>
+<a href="#" data-id="news"><b>📰</b>新闻</a>
+<a href="#" data-id="review"><b>📝</b>复盘</a>
+</nav>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+$('date').textContent = '日期：' + new Date().toLocaleDateString('zh-CN');
+
+document.querySelectorAll('.nav a').forEach(a => {
+  a.onclick = e => {
+    e.preventDefault();
+    document.querySelectorAll('.nav a').forEach(x =>
+      x.classList.toggle('active', x === a)
+    );
+    document.querySelectorAll('.section').forEach(x =>
+      x.classList.toggle('active', x.id === a.dataset.id)
+    );
+    window.scrollTo(0, 0);
+  };
+});
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function val(obj, keys) {
+  for (const k of keys) {
+    if (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
+  }
+  return null;
+}
+
+function num(v) {
+  if (v === null || v === undefined || v === '') return '--';
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString('zh-CN',{maximumFractionDigits:2}) : esc(v);
+}
+
+function pct(v) {
+  if (v === null || v === undefined || v === '') return '--';
+  const n = Number(v);
+  return Number.isFinite(n) ? (n > 0 ? '+' : '') + n.toFixed(2) + '%' : esc(v);
+}
+
+function cls(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n === 0) return 'neutral';
+  return n > 0 ? 'up' : 'down';
+}
+
+function sectorRows(market) {
+  const s = market?.sectors;
+  const d = s?.data;
+  if (!d) return [];
+
+  let rows = [];
+  if (Array.isArray(d)) rows = d;
+  else if (Array.isArray(d.concept)) rows = d.concept;
+  else if (Array.isArray(d.concept?.rows)) rows = d.concept.rows;
+  else if (Array.isArray(d.industry)) rows = d.industry;
+  else if (Array.isArray(d.industry?.rows)) rows = d.industry.rows;
+  else if (Array.isArray(d.rows)) rows = d.rows;
+
+  return rows.map(r => ({
+    name: val(r,['板块名称','名称','name','板块','行业名称']),
+    change: val(r,['涨跌幅','涨幅','change_percent','pct_change','change']),
+    up: val(r,['上涨家数','上涨数量','up_count']),
+    down: val(r,['下跌家数','下跌数量','down_count']),
+    leader: val(r,['领涨股票','领涨股','leader','领涨股票名称']),
+    leaderChange: val(r,['领涨股票-涨跌幅','领涨股涨跌幅','leader_change'])
+  })).filter(r => r.name !== null);
+}
+
+function renderSectors(rows, limit = 0) {
+  if (!rows.length) return '<div class="empty">暂未获取到板块数据。请稍后刷新，或检查后台接口。</div>';
+
+  const sorted = [...rows].sort((a,b) => {
+    const x = Number(a.change), y = Number(b.change);
+    if (!Number.isFinite(x)) return 1;
+    if (!Number.isFinite(y)) return -1;
+    return y-x;
+  });
+  const shown = limit ? sorted.slice(0,limit) : sorted;
+
+  return '<div class="table-wrap"><table><thead><tr>' +
+    '<th>排名</th><th>板块</th><th>涨跌幅</th><th>涨/跌家数</th><th>领涨股</th><th>领涨股涨幅</th>' +
+    '</tr></thead><tbody>' +
+    shown.map((r,i) => `<tr>
+      <td><span class="rank ${i<3?'top':''}">${i+1}</span></td>
+      <td>${esc(r.name)}</td>
+      <td class="${cls(r.change)}">${pct(r.change)}</td>
+      <td>${esc(r.up ?? '--')} / ${esc(r.down ?? '--')}</td>
+      <td>${esc(r.leader ?? '--')}</td>
+      <td class="${cls(r.leaderChange)}">${pct(r.leaderChange)}</td>
+    </tr>`).join('') +
+    '</tbody></table></div>';
+}
+
+function renderLeaders(rows) {
+  const leaders = rows.filter(r => r.leader);
+  if (!leaders.length) return '<div class="empty">后台暂未返回板块领涨股数据，不会用虚构股票填充。</div>';
+
+  leaders.sort((a,b) => (Number(b.change)||-Infinity) - (Number(a.change)||-Infinity));
+
+  return leaders.slice(0,30).map((r,i) => `
+    <div class="tile" style="margin-bottom:9px">
+      <div style="display:flex;justify-content:space-between;gap:10px">
+        <b>${i+1}. ${esc(r.name)}</b>
+        <span class="${cls(r.change)}">${pct(r.change)}</span>
+      </div>
+      <p class="note" style="margin:8px 0 0">
+        板块领涨股：${esc(r.leader)}；
+        个股涨幅：<span class="${cls(r.leaderChange)}">${pct(r.leaderChange)}</span>
+      </p>
+      <div class="hint">上涨 ${esc(r.up ?? '--')} 家 · 下跌 ${esc(r.down ?? '--')} 家</div>
+    </div>`).join('');
+}
+
+function renderIndices(market) {
+  const indices = market?.indices;
+  let list = [];
+
+  if (Array.isArray(indices?.data)) list = indices.data;
+  else if (Array.isArray(indices?.data?.rows)) list = indices.data.rows;
+  else if (indices?.data && typeof indices.data === 'object') {
+    list = Object.entries(indices.data).map(([name,v]) => ({
+      name,...(typeof v === 'object' ? v : {latest:v})
+    }));
+  } else if (indices && typeof indices === 'object') {
+    list = Object.entries(indices)
+      .filter(([k,v]) => !['status','message','updated_at','source'].includes(k) && v && typeof v === 'object')
+      .map(([name,v]) => ({name,...v}));
+  }
+
+  function find(patterns) {
+    return list.find(r => patterns.some(p =>
+      String(val(r,['名称','指数名称','name','代码','symbol']) ?? '').includes(p)
+    ));
+  }
+
+  function show(r, priceId, changeId) {
+    if (!r) return;
+    const price = val(r,['最新价','当前点位','最新','收盘','close','latest','price','value']);
+    const change = val(r,['涨跌幅','涨幅','change_percent','pct_change','change']);
+    if (price !== null) $(priceId).textContent = num(price);
+    if (change !== null) {
+      $(changeId).textContent = '涨跌幅 ' + pct(change);
+      $(changeId).className = 'hint ' + cls(change);
+      $(priceId).className = 'value ' + cls(change);
+    }
+  }
+
+  show(find(['上证指数','上证综指','沪指','000001']),'shIndex','shChange');
+  show(find(['深证成指','深成指','399001']),'szIndex','szChange');
+}
+
+function renderMarket(market) {
+  renderIndices(market);
+
+  const amount = market?.amount;
+  if (amount?.status === 'ok' && amount.data != null) {
+    const v = val(amount.data,['总成交额','成交额','amount','value']);
+    if (v !== null) {
+      const n = Number(v);
+      $('marketAmount').textContent = Number.isFinite(n)
+        ? (n >= 1e8 ? (n/1e8).toFixed(2)+'亿元' : num(n))
+        : esc(v);
+    } else $('marketAmount').textContent = '接口已返回';
+  } else $('marketAmount').textContent = '暂不可用';
+
+  const ls = market?.limit_stats;
+  if (ls?.status === 'ok' && ls.data) {
+    const up = val(ls.data,['涨停数','涨停家数','limit_up']);
+    const down = val(ls.data,['跌停数','跌停家数','limit_down']);
+    $('limitStats').textContent = up !== null || down !== null ? `${up ?? '--'} / ${down ?? '--'}` : '暂不可用';
+  } else $('limitStats').textContent = '暂不可用';
+
+  const rows = sectorRows(market);
+  $('overviewSectors').innerHTML = renderSectors(rows,10);
+  $('allSectors').innerHTML = renderSectors(rows);
+  $('leaderList').innerHTML = renderLeaders(rows);
+
+  let summary = market?.message || '已读取行情接口。';
+  const b = market?.breadth;
+  if (b?.status === 'ok' && b.data) {
+    const up = val(b.data,['上涨家数','上涨数量','up']);
+    const down = val(b.data,['下跌家数','下跌数量','down']);
+    if (up !== null || down !== null) summary += ` 全市场上涨 ${up ?? '--'} 家、下跌 ${down ?? '--'} 家。`;
+  }
+  $('marketSummary').textContent = summary;
+
+  const updated = market?.updated_at ? '后台更新时间：' + market.updated_at : '后台尚未提供更新时间。';
+  $('overviewUpdated').textContent = updated;
+  $('sectorsUpdated').textContent = updated;
+
+  $('dataAlert').innerHTML = (market?.status === 'ok' || market?.status === 'partial')
+    ? '<b>行情状态：</b>已连接后台。缺失项目会标注暂不可用，页面不使用虚构数据。'
+    : '<b>行情状态：</b>后台已响应或正在加载，但部分行情数据暂不可用。';
+}
+
+async function loadMarket() {
+  $('overviewSectors').innerHTML = '<div class="loading">正在更新板块数据……</div>';
+  $('allSectors').innerHTML = '<div class="loading">正在更新板块数据……</div>';
+
+  try {
+    const response = await fetch('/api/market',{cache:'no-store'});
+    if (!response.ok) throw new Error('行情接口 HTTP '+response.status);
+    const market = await response.json();
+    renderMarket(market);
+
+    $('clock').textContent = '云端服务：已连接';
+    $('health').textContent = '后端运行正常';
+    $('healthText').textContent = '行情接口已响应；各模块可用状态以实际返回结果为准。';
+  } catch (e) {
+    $('clock').textContent = '云端服务：连接异常';
+    $('health').textContent = '行情接口暂不可用';
+    $('healthText').textContent = String(e.message || e);
+    $('dataAlert').innerHTML = '<b>行情状态：</b>暂时无法读取后台行情，请检查网络或稍后重试。';
+    $('overviewSectors').innerHTML = '<div class="empty">行情加载失败，请点击刷新行情。</div>';
+    $('allSectors').innerHTML = '<div class="empty">行情加载失败，请点击刷新。</div>';
+    $('leaderList').innerHTML = '<div class="empty">暂时无法读取领涨股。</div>';
+  }
+}
+
+fetch('/api/health',{cache:'no-store'})
+.then(r => {
+  if (!r.ok) throw new Error('健康检查失败');
+  return r.json();
+})
+.then(j => {
+  $('health').textContent = '后端运行正常';
+  $('clock').textContent = '云端服务：已连接';
+  $('healthText').textContent = '服务时间：'+(j.time || '后台未提供')+'。'+(j.note || '');
+})
+.catch(() => {
+  $('health').textContent = '服务状态待核验';
+  $('healthText').textContent = '健康检查接口暂不可用。';
+});
+
+loadMarket();
+</script>
+</body>
+</html>
