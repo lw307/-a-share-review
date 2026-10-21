@@ -4,6 +4,8 @@ from datetime import datetime
 
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 import os
 
 import threading
@@ -106,38 +108,34 @@ def unavailable(reason):
     }
 
 def fetch_indices():
-
     """
-
-    在后台尝试获取真实指数数据。
-
-    即使外部接口响应缓慢，网页请求也不会等待这个函数结束。
-
+    获取真实指数行情。
+    优先从东方财富获取；失败时尝试新浪财经。
+    保留完整指数列表，不再只取前10条。
     """
-
     global fetch_running, last_attempt
 
     if not fetch_lock.acquire(blocking=False):
-
         return
 
     try:
-
         fetch_running = True
-
         last_attempt = datetime.now(TZ).timestamp()
 
         with cache_lock:
-
             market_cache["message"] = "正在后台获取真实指数数据"
 
         import akshare as ak
+        import math
 
+        # 优先尝试东方财富，失败后尝试新浪财经
         try:
             df = ak.stock_zh_index_spot_em()
+            source_name = "东方财富"
         except Exception as em_exc:
             try:
                 df = ak.stock_zh_index_spot_sina()
+                source_name = "新浪财经"
             except Exception as sina_exc:
                 raise RuntimeError(
                     "东方财富和新浪财经接口均获取失败。"
@@ -148,65 +146,101 @@ def fetch_indices():
                 ) from sina_exc
 
         if df is None or df.empty:
-
             raise ValueError("指数接口没有返回有效数据")
 
-        records = df.head(10).to_dict(orient="records")
+        # 兼容不同接口的字段名称
+        code_candidates = ["代码", "指数代码", "symbol", "code"]
+        name_candidates = ["名称", "指数名称", "name"]
+        code_col = next(
+            (col for col in code_candidates if col in df.columns),
+            None
+        )
+        name_col = next(
+            (col for col in name_candidates if col in df.columns),
+            None
+        )
 
-        # 将 NaN 等非标准数值转换为 JSON 可处理的 None
+        # 优先筛选上证指数、深证成指及常用宽基指数。
+        # 不假定不同数据源的字段完全相同。
+        target_codes = {
+            "000001", "399001", "399006",
+            "000300", "000016", "000905"
+        }
+        target_names = [
+            "上证指数", "上证综指", "深证成指",
+            "沪深300", "上证50", "中证500"
+        ]
 
+        selected = []
+
+        if code_col:
+            codes = (
+                df[code_col]
+                .astype(str)
+                .str.replace(r"\.0$", "", regex=True)
+                .str.strip()
+                .str.zfill(6)
+            )
+            selected = df[codes.isin(target_codes)].copy()
+
+        if name_col:
+            names = df[name_col].astype(str)
+            name_mask = names.apply(
+                lambda name: any(target in name for target in target_names)
+            )
+            named_rows = df[name_mask]
+            if selected:
+                selected = pd.concat(
+                    [selected, named_rows]
+                ).drop_duplicates()
+            else:
+                selected = named_rows.copy()
+
+        # 如果目标指数未匹配到，保留完整行情列表，
+        # 供前端查看真实数据并进一步排查字段。
+        if selected is None or selected.empty:
+            selected = df.copy()
+
+        records = selected.to_dict(orient="records")
         clean_records = []
 
         for record in records:
-
             clean_record = {}
 
             for key, value in record.items():
-
                 try:
-
                     if value is None:
-
                         clean_record[key] = None
-
-                    elif str(value).lower() == "nan":
-
-                        clean_record[key] = None
-
                     elif hasattr(value, "item"):
-
-                        clean_record[key] = value.item()
-
-                    else:
-
+                        value = value.item()
+                        if isinstance(value, float) and not math.isfinite(value):
+                            value = None
                         clean_record[key] = value
-
+                    elif isinstance(value, float) and not math.isfinite(value):
+                        clean_record[key] = None
+                    else:
+                        clean_record[key] = value
                 except Exception:
-
                     clean_record[key] = str(value)
 
             clean_records.append(clean_record)
 
+        # 需要 pandas 进行合并与去重
         with cache_lock:
-
             market_cache["indices"] = {
-
                 "status": "ok",
-
                 "data": clean_records,
-
-                "message": "指数数据已获取"
-
+                "message": (
+                    f"{source_name}指数数据已获取，"
+                    f"返回{len(clean_records)}条记录"
+                )
             }
 
             market_cache["updated_at"] = current_time()
-
             market_cache["status"] = "partial"
-
             market_cache["message"] = (
-
-                "已获取指数数据，其他行情模块正在逐步接入"
-
+                "指数数据已更新；成交额、市场涨跌家数及涨停跌停统计"
+                "仍需单独接入。"
             )
 
     except Exception as exc:
@@ -228,7 +262,6 @@ def fetch_indices():
     finally:
         fetch_running = False
         fetch_lock.release()
-
 def start_background_fetch():
     """
     控制请求频率，避免每次打开网页都请求外部数据。
