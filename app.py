@@ -527,11 +527,13 @@ def test_sectors():
     result = {}
 
     tests = {
-        "industry_ths_quotes": "stock_board_industry_index_ths",
-        "concept_ths_quotes": "stock_board_concept_index_ths",
-        "concept_em_quotes": "stock_board_concept_name_em",
-        "industry_ths_names": "stock_board_industry_name_ths",
-    }
+    "industry_em_spot": "stock_board_industry_spot_em",
+    "industry_em_names": "stock_board_industry_name_em",
+    "industry_ths_quotes": "stock_board_industry_index_ths",
+    "concept_ths_quotes": "stock_board_concept_index_ths",
+    "concept_em_quotes": "stock_board_concept_name_em",
+    "industry_ths_names": "stock_board_industry_name_ths",
+}
 
     def test_one(name, func_name):
         func = getattr(ak, func_name, None)
