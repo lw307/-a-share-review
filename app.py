@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-marketquality-v10"
+APP_VERSION = "20261021-integrated-v11"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
