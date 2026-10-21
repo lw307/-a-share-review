@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-live-pwa-v12"
+APP_VERSION = "20261021-mainboard-v13"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -576,6 +576,19 @@ def init_db():
             initial_cash REAL NOT NULL,
             cash REAL NOT NULL
         )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS sector_daily_history (
+            trade_date TEXT NOT NULL, sector_type TEXT NOT NULL, sector_name TEXT NOT NULL,
+            change_percent REAL, strength_score REAL, coverage_percent REAL,
+            leader_code TEXT, leader_name TEXT, PRIMARY KEY(trade_date, sector_type, sector_name)
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS stock_daily_history (
+            trade_date TEXT NOT NULL, code TEXT NOT NULL, name TEXT, change_percent REAL,
+            latest_price REAL, amount REAL, PRIMARY KEY(trade_date, code)
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS account_equity_history (
+            record_date TEXT PRIMARY KEY, equity REAL NOT NULL, cash REAL NOT NULL,
+            market_value REAL NOT NULL, profit REAL NOT NULL, return_percent REAL NOT NULL
+        )""")
         con.execute("INSERT OR IGNORE INTO account(id, initial_cash, cash) VALUES(1, 50000, 50000)")
         con.commit()
 
@@ -799,6 +812,39 @@ def stocks():
         rows = [r for r in rows if query in normalize_stock_code(r.get("代码", r.get("股票代码", ""))).lower() or query in str(r.get("名称", r.get("股票简称", ""))).lower()]
     return jsonify({"status": "ok" if rows else "unavailable", "data": rows[:100], "count": len(rows), "message": "仅展示沪深主板真实行情；已排除创业板、科创板和北交所；仅返回前100条匹配结果。"})
 
+def save_daily_research_history(trade_date, industry_rows, concept_rows, stock_rows):
+    """Persist only actual returned snapshots; history is incomplete if the app was not opened on prior sessions."""
+    with sqlite3.connect(DB_PATH) as con:
+        for sector_type, rows in (("industry", industry_rows), ("concept", concept_rows)):
+            for r in rows:
+                con.execute("""INSERT OR REPLACE INTO sector_daily_history
+                    (trade_date, sector_type, sector_name, change_percent, strength_score, coverage_percent, leader_code, leader_name)
+                    VALUES(?,?,?,?,?,?,?,?)""", (trade_date, sector_type, r.get("name"), r.get("change_percent"), r.get("strength_score"),
+                    (r.get("score_data_quality") or {}).get("coverage_percent"), r.get("leader_code"), r.get("leader")))
+        # Save the main-board universe snapshot actually returned by the source, not just the top-ten watchlist.
+        for stock in stock_rows:
+            code = normalize_stock_code(stock.get("代码") or stock.get("股票代码") or stock.get("code"))
+            name = str(stock.get("名称") or stock.get("股票简称") or stock.get("name") or "")
+            change = as_float(stock.get("涨跌幅") or stock.get("涨幅") or stock.get("change_percent"))
+            price = as_float(stock.get("最新价") or stock.get("最新") or stock.get("现价"))
+            amount = as_float(stock.get("成交额") or stock.get("成交金额") or stock.get("amount"))
+            if is_main_board_code(code) and name and change is not None:
+                con.execute("""INSERT OR REPLACE INTO stock_daily_history
+                    (trade_date, code, name, change_percent, latest_price, amount) VALUES(?,?,?,?,?,?)""",
+                    (trade_date, code, name, change, price, amount))
+        con.commit()
+
+def load_history(trade_date):
+    with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
+        dates = [r[0] for r in con.execute("SELECT trade_date FROM (SELECT trade_date FROM sector_daily_history UNION SELECT trade_date FROM stock_daily_history) WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 5", (trade_date,)).fetchall()]
+        sectors = [dict(r) for r in con.execute("SELECT * FROM sector_daily_history WHERE trade_date <= ? ORDER BY trade_date DESC", (trade_date,)).fetchall()]
+        stocks = [dict(r) for r in con.execute("SELECT * FROM stock_daily_history WHERE trade_date <= ? ORDER BY trade_date DESC", (trade_date,)).fetchall()]
+        trades = [dict(r) for r in con.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 500").fetchall()]
+        equity_rows = [dict(r) for r in con.execute("SELECT * FROM account_equity_history ORDER BY record_date").fetchall()]
+    date_set = set(dates)
+    return dates, [r for r in sectors if r["trade_date"] in date_set], [r for r in stocks if r["trade_date"] in date_set], trades, equity_rows
+
 @app.get("/api/report")
 def report():
     # Trigger background refresh if cache is empty/stale; report itself stays responsive.
@@ -956,8 +1002,144 @@ def report():
         "sector_is_stale": sector_age is None or sector_age > 1800,
         "note": "超过30分钟的数据标记为可能过期；盘中快照不等于最终收盘数据。"
     }
+    report_date = datetime.now(TZ).strftime("%Y-%m-%d")
+    # Avoid turning stale quotes/weekends into fake daily history records. Holidays still require manual data-date verification.
+    record_history_today = (not market_stale and datetime.now(TZ).weekday() < 5)
+    if record_history_today:
+        save_daily_research_history(report_date, ranked_industry, ranked_concept, stock_rows)
+    history_dates, sector_history, stock_history, trade_history, equity_history = load_history(report_date)
+
+    # Cross-day persistence is based on observed daily records only; never fill missing sessions with guesses.
+    persistence_by_type = {}
+    for sector_type in ("industry", "concept"):
+        type_rows = [r for r in sector_history if r["sector_type"] == sector_type]
+        per_name = {}
+        for r in type_rows:
+            item = per_name.setdefault(r["sector_name"], {"days_seen": 0, "top10_days": 0, "positive_days": 0, "changes": [], "scores": []})
+            item["days_seen"] += 1
+            if r.get("change_percent") is not None:
+                item["changes"].append(float(r["change_percent"]))
+                if float(r["change_percent"]) > 0: item["positive_days"] += 1
+            if r.get("strength_score") is not None: item["scores"].append(float(r["strength_score"]))
+        for d in history_dates:
+            todays = sorted([r for r in type_rows if r["trade_date"] == d and r.get("strength_score") is not None], key=lambda x: x["strength_score"], reverse=True)[:10]
+            for r in todays:
+                per_name.setdefault(r["sector_name"], {"days_seen": 0, "top10_days": 0, "positive_days": 0, "changes": [], "scores": []})["top10_days"] += 1
+        entries=[]
+        for name, item in per_name.items():
+            entries.append({"name": name, "observed_days": item["days_seen"], "top10_days": item["top10_days"],
+                "positive_days": item["positive_days"], "avg_change": round(sum(item["changes"])/len(item["changes"]), 2) if item["changes"] else None,
+                "avg_score": round(sum(item["scores"])/len(item["scores"]), 1) if item["scores"] else None,
+                "persistence_score": round((item["top10_days"] / max(1, len(history_dates))) * 70 + (item["positive_days"] / max(1, item["days_seen"])) * 30, 1)})
+        persistence_by_type[sector_type] = sorted(entries, key=lambda x: (x["persistence_score"], x["avg_change"] or -999), reverse=True)[:10]
+
+    # Market emotion score with explicit data coverage; estimate-based limit statistics are marked as lower confidence.
+    breadth_data = (snapshot.get("breadth") or {}).get("data") or {}
+    limit_data = (snapshot.get("limit_stats") or {}).get("data") or {}
+    up_n = as_float(breadth_data.get("上涨家数")); down_n = as_float(breadth_data.get("下跌家数"))
+    limit_up = as_float(limit_data.get("涨停家数_估算")); limit_down = as_float(limit_data.get("跌停家数_估算"))
+    index_rows = (snapshot.get("indices") or {}).get("data") or []
+    def index_change(match):
+        for rr in index_rows:
+            nm = str(rr.get("名称") or rr.get("指数名称") or rr.get("name") or "")
+            if match in nm:
+                return as_float(rr.get("涨跌幅") or rr.get("涨幅") or rr.get("change_percent") or rr.get("pct_change"))
+        return None
+    sh_change, sz_change = index_change("上证"), index_change("深证")
+    emotion_parts=[]; emotion_weights=[]
+    if up_n is not None and down_n is not None and up_n+down_n>0:
+        emotion_parts.append(100*up_n/(up_n+down_n)); emotion_weights.append(0.45)
+    index_changes=[x for x in (sh_change, sz_change) if x is not None]
+    if index_changes:
+        avg_idx=sum(index_changes)/len(index_changes)
+        emotion_parts.append(max(0,min(100,(avg_idx+3.0)/6.0*100))); emotion_weights.append(0.30)
+    if limit_up is not None and limit_down is not None and limit_up+limit_down>0:
+        emotion_parts.append(100*limit_up/(limit_up+limit_down)); emotion_weights.append(0.25)
+    emotion_coverage=round(sum(emotion_weights)/1.0*100)
+    emotion_score=round(sum(v*w for v,w in zip(emotion_parts,emotion_weights))/sum(emotion_weights),1) if emotion_weights else None
+    breadth_ratio=(up_n/(up_n+down_n)) if up_n is not None and down_n is not None and up_n+down_n>0 else None
+    market_stale=market_age is None or market_age>1800
+    no_open_reasons=[]
+    if emotion_score is None: no_open_reasons.append("情绪关键数据不足，暂不新开仓")
+    elif emotion_score < 45: no_open_reasons.append(f"市场情绪评分仅 {emotion_score}/100，低于45分开仓观察线")
+    if breadth_ratio is not None and breadth_ratio < 0.42: no_open_reasons.append(f"上涨家数占比仅 {breadth_ratio*100:.1f}%，市场赚钱效应偏弱")
+    if down_n is not None and up_n is not None and down_n > up_n*1.25: no_open_reasons.append("下跌家数明显多于上涨家数")
+    if sh_change is not None and sz_change is not None and sh_change < 0 and sz_change < 0 and (limit_up is not None and limit_down is not None and limit_up < limit_down*2): no_open_reasons.append("两大指数均下跌，涨停相对跌停优势不足")
+    if emotion_coverage < 70: no_open_reasons.append("情绪数据覆盖率低于70%，为避免误判，明日不新开仓")
+    if market_stale: no_open_reasons.append("行情超过30分钟未更新或更新时间未知，明日开盘前须重新核验")
+    no_open = bool(no_open_reasons)
+    emotion = {"score": emotion_score, "coverage_percent": emotion_coverage, "breadth_ratio_percent": round(breadth_ratio*100,1) if breadth_ratio is not None else None,
+        "up_count": up_n, "down_count": down_n, "sh_change": sh_change, "sz_change": sz_change, "limit_up_estimate": limit_up, "limit_down_estimate": limit_down,
+        "decision": "明日不开新仓" if no_open else "可观察，仍须满足个股条件", "no_open": no_open, "reasons": no_open_reasons,
+        "method": "规则化情绪参考分，不是经过验证的预测模型；涨跌停数量若为估算会降低可靠性。"}
+
+    # Provisional leader candidates use observable snapshot strength only. No false claim of sector membership.
+    stock_by_code = {}
+    for rr in stock_rows:
+        cc=normalize_stock_code(rr.get("代码") or rr.get("股票代码") or rr.get("code"))
+        nm=str(rr.get("名称") or rr.get("股票简称") or rr.get("name") or "")
+        ch=as_float(rr.get("涨跌幅") or rr.get("涨幅") or rr.get("change_percent"))
+        pr=as_float(rr.get("最新价") or rr.get("最新") or rr.get("现价"))
+        am=as_float(rr.get("成交额") or rr.get("成交金额") or rr.get("amount"))
+        if is_main_board_code(cc) and nm and ch is not None and "ST" not in nm.upper() and "退" not in nm and pr and pr>0:
+            stock_by_code[cc]={"code":cc,"name":nm,"change_percent":ch,"latest_price":pr,"amount":am}
+    stock_hist_by_code={}
+    for r in stock_history:
+        stock_hist_by_code.setdefault(r["code"],[]).append(r)
+    leader_candidates=[]
+    for item in stock_by_code.values():
+        hist=stock_hist_by_code.get(item["code"],[])
+        positive_days=sum(1 for h in hist if h.get("change_percent") is not None and h["change_percent"]>0)
+        top_watch_days=sum(1 for h in hist if h.get("change_percent") is not None and h["change_percent"]>=5)
+        amount_score=min(100, (math.log10(max(1,item["amount"] or 1))-4)*15) if item["amount"] else 0
+        item.update({"observed_days":len(hist),"positive_days":positive_days,"strong_days":top_watch_days,
+            "candidate_score":round(max(0,min(100, item["change_percent"]*4 + amount_score*0.25 + positive_days*3)),1),
+            "classification":"当日涨幅/成交额强势候选；跨日记录不足时不称为趋势龙头" if len(hist)<3 else "短期强势候选；仍需人工核对K线、换手及题材带动"})
+        leader_candidates.append(item)
+    leader_candidates.sort(key=lambda x:(x["candidate_score"],x["change_percent"],x["amount"] or 0),reverse=True)
+    leader_candidates=leader_candidates[:10]
+
+    # Trade review from recorded round trips using FIFO lots; no unrealized P&L is mixed into win rate.
+    lots={}; closed=[]
+    for t in sorted(trade_history,key=lambda x:x["id"]):
+        code=t["code"]
+        if t["side"]=="BUY": lots.setdefault(code,[]).append({"shares":int(t["shares"]),"unit_cost":(float(t["amount"])+float(t["fee"]))/max(1,int(t["shares"]))})
+        elif t["side"]=="SELL":
+            remain=int(t["shares"]); proceeds=(float(t["amount"])-float(t["fee"]))
+            while remain>0 and lots.get(code):
+                lot=lots[code][0]; take=min(remain,lot["shares"])
+                cost=lot["unit_cost"]*take; pnl=proceeds*(take/max(1,int(t["shares"]))) - cost
+                closed.append({"code":code,"name":t["name"],"shares":take,"pnl":pnl,"return_percent":pnl/max(1,cost)*100,"date":t["created_at"]})
+                lot["shares"]-=take; remain-=take
+                if lot["shares"]<=0: lots[code].pop(0)
+    wins=sum(1 for x in closed if x["pnl"]>0)
+    trade_review={"closed_lots":len(closed),"win_rate_percent":round(wins/len(closed)*100,1) if closed else None,
+        "realized_pnl":round(sum(x["pnl"] for x in closed),2),"avg_return_percent":round(sum(x["return_percent"] for x in closed)/len(closed),2) if closed else None,
+        "best_trade":max(closed,key=lambda x:x["pnl"]) if closed else None,"worst_trade":min(closed,key=lambda x:x["pnl"]) if closed else None,
+        "equity_history_days":len(equity_history),"note":"只统计已完成的模拟卖出匹配批次；不含未实现盈亏。胜率样本很少时参考意义有限。"}
+
+    # Record daily account equity for later drawdown analysis; current account endpoint stays the source of account valuation.
+    try:
+        acct=account_snapshot()
+        if record_history_today:
+            with sqlite3.connect(DB_PATH) as con:
+                con.execute("INSERT OR REPLACE INTO account_equity_history(record_date,equity,cash,market_value,profit,return_percent) VALUES(?,?,?,?,?,?)",
+                    (report_date, float(acct.get("equity",50000)), float(acct.get("cash",50000)), float(acct.get("market_value",0)), float(acct.get("profit",0)), float(acct.get("return_percent",0))))
+                con.commit()
+            equity_history.append({"record_date":report_date,"equity":acct.get("equity",50000)})
+    except Exception:
+        pass
+    peak=None; max_drawdown=0.0
+    for er in equity_history:
+        eq=as_float(er.get("equity"))
+        if eq is None: continue
+        peak=eq if peak is None else max(peak,eq)
+        if peak and eq<peak: max_drawdown=max(max_drawdown,(peak-eq)/peak*100)
+    trade_review["max_drawdown_percent"] = round(max_drawdown,2) if equity_history else None
+    trade_review["equity_history_days"] = len(equity_history)
+
     return jsonify({
-        "date": datetime.now(TZ).strftime("%Y-%m-%d"),
+        "date": report_date,
         "generated_at": now_iso(),
         "freshness": freshness,
         "market_source_diagnostics": snapshot.get("source_diagnostics") or {"checked_at": None, "attempts": [], "note": "尚无行情源诊断记录"},
@@ -974,6 +1156,11 @@ def report():
         "concept_strength_ranked": ranked_concept[:30],
         "main_board_watchlist": main_board_watchlist,
         "main_board_watchlist_count": len(main_board_watchlist),
+        "market_emotion": emotion,
+        "sector_persistence": {"observed_dates": history_dates, "observation_count": len(history_dates), "recorded_today": record_history_today, "warning": "只统计应用实际记录的工作日新鲜快照；节假日仍需人工核对交易日，缺少历史记录不代表板块此前不强。", "industry": persistence_by_type.get("industry", []), "concept": persistence_by_type.get("concept", [])},
+        "leader_candidates": leader_candidates,
+        "next_day_plan": {"decision": "明日不开新仓" if no_open else "先观察再决定", "rules": ["开盘前复核市场情绪、指数及数据更新时间。", "若出现不开新仓提示，不建立新模拟仓位；只管理已有持仓风险。", "若允许观察，也必须等板块有共振、个股量价确认并设置止损；不在集合竞价盲目追高。", "计划持有约3天仅作为复盘假设，不构成必须持有的要求。"], "no_open": no_open},
+        "trade_review": trade_review,
         "sector_scoring_method": {
             "title": "当日板块相对强度评分（0-100）",
             "weights": {"板块涨幅排名": "50%", "板块上涨广度排名": "20%（字段可用时）", "成交额排名": "15%（字段可用时）", "领涨股涨幅排名": "15%（字段可用时）"},
@@ -995,7 +1182,10 @@ def report():
             "全市场主板强势观察榜只依据主板个股快照排序，不代表其属于对应板块的龙二/龙三，也不是自动买入建议。",
             "当前数据源不含完整的板块成分股映射和跨日历史，无法可靠给出每个板块的龙二/龙三及主线持续性分数；缺失内容会明确说明。",
             "涨跌停数量如标注为估算，不能当作交易所官方精确统计。",
-            "报告仅使用实际获取的数据，不会补造缺失行情。"
+            "报告仅使用实际获取的数据，不会补造缺失行情。",
+            "新增情绪规则：若情绪评分低于45、上涨广度偏弱、数据覆盖不足或行情过期，系统提示明日不开新仓；此为纪律提醒而非市场预测。",
+            "板块持续性和个股跨日统计只基于本程序实际保存的历史快照；如果过去几天没有打开程序记录，历史样本不完整。",
+            "龙头候选仅为全市场主板快照的量价强势候选；没有可靠板块成分映射时，不把个股冒称某板块龙一、龙二、龙三。"
         ]
     })
 
