@@ -336,7 +336,7 @@ def start_background_fetch():
     thread.start()
 
 def fetch_sectors():
-    """获取行业板块列表和概念板块行情。"""
+    """获取真实行业板块行情和概念板块行情。"""
     global last_sector_attempt
 
     if not sector_lock.acquire(blocking=False):
@@ -346,6 +346,8 @@ def fetch_sectors():
         last_sector_attempt = datetime.now(TZ).timestamp()
 
         import akshare as ak
+        import pandas as pd
+        import json
 
         result = {
             "industry": [],
@@ -353,51 +355,66 @@ def fetch_sectors():
         }
         errors = []
 
-        # 1. 获取同花顺行业板块列表
-        try:
-            df_industry = ak.stock_board_industry_name_ths()
+        def dataframe_to_records(df):
+            """将有效 DataFrame 转换成 JSON 兼容的字典列表。"""
+            if df is None or not isinstance(df, pd.DataFrame):
+                return []
 
-            if df_industry is None or df_industry.empty:
-                raise ValueError("没有返回有效行业板块数据")
+            if df.empty:
+                return []
 
-            result["industry"] = json.loads(
-                df_industry.to_json(
+            clean_df = df.copy()
+
+            # 将 NaN、NaT 等缺失值转成 None
+            clean_df = clean_df.astype(object)
+            clean_df = clean_df.where(pd.notna(clean_df), None)
+
+            return json.loads(
+                clean_df.to_json(
                     orient="records",
                     force_ascii=False
                 )
             )
 
+        # 1. 优先获取同花顺行业板块行情
+        try:
+            df_industry = ak.stock_board_industry_index_ths()
+
+            records = dataframe_to_records(df_industry)
+
+            if not records:
+                raise ValueError("同花顺行业板块行情没有返回有效记录")
+
+            result["industry"] = records
+
         except Exception as exc:
             errors.append(
-                "同花顺行业板块："
+                "同花顺行业行情："
                 + type(exc).__name__
                 + ": "
                 + str(exc)[:120]
             )
 
-        # 2. 获取已经通过测试的东方财富概念板块行情
+        # 2. 获取东方财富概念板块行情
         try:
             df_concept = ak.stock_board_concept_name_em()
 
-            if df_concept is None or df_concept.empty:
-                raise ValueError("没有返回有效概念板块行情")
+            records = dataframe_to_records(df_concept)
 
-            result["concept"] = json.loads(
-                df_concept.to_json(
-                    orient="records",
-                    force_ascii=False
-                )
-            )
+            if not records:
+                raise ValueError("东方财富概念板块行情没有返回有效记录")
+
+            result["concept"] = records
 
         except Exception as exc:
             errors.append(
-                "东方财富概念板块："
+                "东方财富概念行情："
                 + type(exc).__name__
                 + ": "
                 + str(exc)[:120]
             )
 
-        # 3. 根据实际获取结果确定状态
+        # 3. 根据真实获取结果确定状态
         available = [
             key for key in ("industry", "concept")
             if result[key]
@@ -406,21 +423,20 @@ def fetch_sectors():
         if len(available) == 2:
             status = "ok"
             message = (
-                "行业板块列表和概念板块行情均已获取；"
-                "行业板块实时行情仍需单独接入"
+                "行业板块行情和概念板块行情均已获取"
             )
 
         elif available:
             status = "partial"
             message = (
-                "部分板块数据已获取；"
+                "部分板块行情已获取；"
                 + "；".join(errors)
             )
 
         else:
             status = "unavailable"
             message = (
-                "板块数据获取失败："
+                "板块行情获取失败："
                 + "；".join(errors)
             )
 
