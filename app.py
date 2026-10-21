@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-fallback-v2"
+APP_VERSION = "20261021-sectorfix-v3"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -72,6 +72,20 @@ def as_float(value):
 def first_column(df, candidates):
     return next((c for c in candidates if c in df.columns), None)
 
+def normalize_stock_code(value):
+    """把 sh600000/sz000001/bj920000 统一成六位数字代码。"""
+    code = str(value or "").strip()
+    code = re.sub(r"^(?:sh|sz|bj|SH|SZ|BJ)", "", code)
+    code = re.sub(r"\.0$", "", code)
+    if code.isdigit() and len(code) < 6:
+        code = code.zfill(6)
+    return code
+
+def is_main_board_code(value):
+    """仅允许沪深主板，排除创业板、科创板、北交所。"""
+    code = normalize_stock_code(value)
+    return code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")) and len(code) == 6
+
 def normalize_stock_snapshot(df, source_name):
     """Normalize supported quote-source columns to a shared schema."""
     import pandas as pd
@@ -96,6 +110,7 @@ def normalize_stock_snapshot(df, source_name):
             normalized[target] = out[col]
     if "代码" not in normalized.columns or "最新价" not in normalized.columns:
         return None
+    normalized["代码"] = normalized["代码"].map(normalize_stock_code)
     normalized["_source"] = source_name
     return normalized
 
@@ -284,8 +299,24 @@ def fetch_market_data():
         market_fetch_running = False
         market_fetch_lock.release()
 
+def sector_frame_is_snapshot(df):
+    """只接受含板块名称与涨跌幅的行情快照，不接受名称清单/历史事件表。"""
+    if df is None or getattr(df, "empty", True):
+        return False, "接口返回空数据"
+    name_col = first_column(df, ["板块名称", "名称", "板块", "行业名称", "行业", "name"])
+    change_col = first_column(df, ["涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%", "涨跌幅（%）", "pct_change", "change_percent"])
+    if not name_col:
+        return False, f"缺少板块名称列；实际字段：{','.join(map(str, list(df.columns)[:12]))}"
+    if not change_col:
+        return False, f"缺少涨跌幅列；实际字段：{','.join(map(str, list(df.columns)[:12]))}"
+    # 至少应有一定比例可转成数值，避免把新闻/事件表误当板块榜。
+    valid = sum(as_float(v) is not None for v in df[change_col].head(20).tolist())
+    if valid < min(3, len(df)):
+        return False, "涨跌幅列没有足够的有效数值"
+    return True, None
+
 def fetch_sector_data():
-    """获取实时行业/概念板块快照。历史K线接口不作为当日排名使用。"""
+    """获取板块当日快照。行业增加同花顺实时汇总兜底；概念不拿历史事件表冒充实时排名。"""
     global sector_fetch_running, sector_last_attempt
     if not sector_fetch_lock.acquire(blocking=False):
         return
@@ -294,38 +325,75 @@ def fetch_sector_data():
     try:
         import akshare as ak
         result = {"industry": [], "concept": []}
+        source_used = {}
         errors = []
         sources = {
-            "industry": ["stock_board_industry_name_em", "stock_board_industry_name_ths"],
-            "concept": ["stock_board_concept_name_em", "stock_board_concept_name_ths"],
+            # stock_board_industry_name_ths 只是行业名称列表，不能当行情榜；summary_ths 才是行情汇总。
+            "industry": [
+                ("东方财富行业快照", "stock_board_industry_name_em", None),
+                ("同花顺行业实时汇总", "stock_board_industry_summary_ths", None),
+            ],
+            # name_em 在接口可用时直接返回板块涨跌幅；THS concept name/summary 是名称或事件表，不作涨幅排名。
+            "concept": [
+                ("东方财富概念快照", "stock_board_concept_name_em", None),
+            ],
         }
-        for key, func_names in sources.items():
-            for func_name in func_names:
+        for key, providers in sources.items():
+            for source_label, func_name, args in providers:
                 try:
                     fn = getattr(ak, func_name, None)
                     if not callable(fn):
                         errors.append(f"{key}/{func_name}：函数不存在")
                         continue
-                    df = fn()
+                    df = fn(**(args or {}))
+                    valid, reason = sector_frame_is_snapshot(df)
+                    if not valid:
+                        raise RuntimeError(reason or "非有效板块行情快照")
+                    # Normalize only key columns; preserve all original fields for the UI/report.
+                    name_col = first_column(df, ["板块名称", "名称", "板块", "行业名称", "行业", "name"])
+                    change_col = first_column(df, ["涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%", "涨跌幅（%）", "pct_change", "change_percent"])
                     records = safe_records(df)
-                    if not records:
-                        raise RuntimeError("接口没有返回有效记录")
-                    # Accept only likely snapshot/ranking fields; avoid treating arbitrary historical rows as board rankings.
-                    sample = records[0]
-                    has_change = any(k in sample for k in ("涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%"))
-                    if not has_change:
-                        raise RuntimeError("返回数据缺少涨跌幅字段，不作为实时板块排名使用")
-                    result[key] = records
+                    normalized = []
+                    for row in records:
+                        if row.get("板块名称") in (None, ""):
+                            row["板块名称"] = row.get(name_col)
+                        if row.get("涨跌幅") in (None, ""):
+                            row["涨跌幅"] = row.get(change_col)
+                        # Normalize optional leader aliases for the frontend.
+                        if row.get("领涨股票") in (None, ""):
+                            row["领涨股票"] = row.get("领涨股") or row.get("领涨股票名称")
+                        if row.get("领涨股票-涨跌幅") in (None, ""):
+                            row["领涨股票-涨跌幅"] = row.get("领涨股涨跌幅")
+                        normalized.append(row)
+                    result[key] = normalized
+                    source_used[key] = source_label
                     break
                 except Exception as exc:
-                    errors.append(f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:80]}")
+                    errors.append(f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:100]}")
         available = bool(result["industry"] or result["concept"])
         both = bool(result["industry"] and result["concept"])
+        if both:
+            status = "ok"
+            message = "行业和概念板块实时快照均已获取"
+        elif result["industry"]:
+            status = "partial"
+            message = "行业板块排名已恢复；概念板块数据源当前不可用，未使用历史事件表伪造排名"
+        elif result["concept"]:
+            status = "partial"
+            message = "概念板块排名可用；行业板块数据源当前不可用"
+        else:
+            status = "unavailable"
+            message = "未取得有效的当日板块涨跌幅快照"
+        details = []
+        if source_used:
+            details.append("成功来源：" + "、".join(f"{k}={v}" for k, v in source_used.items()))
+        if errors:
+            details.append("接口提示：" + "；".join(errors[:4]))
         with cache_lock:
             market_cache["sectors"] = {
-                "status": "ok" if both else ("partial" if available else "unavailable"),
+                "status": status,
                 "data": result if available else None,
-                "message": ("行业和概念板块快照均已获取" if both else "部分板块数据可用" if available else "板块快照不可用") + (("；" + "；".join(errors)) if errors else "")
+                "message": message + (("；" + "；".join(details)) if details else "")
             }
             market_cache["updated_at"] = now_iso()
     except Exception as exc:
@@ -390,7 +458,7 @@ def quote_map():
         rows = market_cache.get("stocks", {}).get("data") or []
     result = {}
     for row in rows:
-        code = str(row.get("代码") or row.get("股票代码") or row.get("code") or "").strip()
+        code = normalize_stock_code(row.get("代码") or row.get("股票代码") or row.get("code") or "")
         name = str(row.get("名称") or row.get("股票简称") or row.get("name") or code)
         price = as_float(row.get("最新价") or row.get("最新") or row.get("现价") or row.get("price"))
         change = as_float(row.get("涨跌幅") or row.get("涨幅"))
@@ -449,7 +517,7 @@ def diagnostics():
     try:
         import akshare as ak
         version = getattr(ak, "__version__", "unknown")
-        names = ["stock_zh_index_spot_em", "stock_zh_index_spot_sina", "stock_zh_a_spot_em", "stock_zh_a_spot", "stock_board_industry_name_em", "stock_board_concept_name_em", "stock_board_industry_name_ths", "stock_board_concept_name_ths"]
+        names = ["stock_zh_index_spot_em", "stock_zh_index_spot_sina", "stock_zh_a_spot_em", "stock_zh_a_spot", "stock_board_industry_name_em", "stock_board_concept_name_em", "stock_board_industry_name_ths", "stock_board_concept_name_ths", "stock_board_industry_summary_ths", "stock_board_concept_spot_em"]
         funcs = {n: callable(getattr(ak, n, None)) for n in names}
     except Exception as exc:
         version = None
@@ -482,7 +550,9 @@ def sim_account():
 @app.post("/api/sim/buy")
 def sim_buy():
     body = request.get_json(silent=True) or {}
-    code = str(body.get("code", "")).strip()
+    code = normalize_stock_code(body.get("code", ""))
+    if not is_main_board_code(code):
+        return jsonify({"ok": False, "error": "本模拟账户只允许沪深主板股票（沪市600/601/603/605、深市000/001/002/003）；不含创业板、科创板和北交所。"}), 400
     try:
         shares = int(body.get("shares", 0))
     except Exception:
@@ -522,7 +592,7 @@ def sim_buy():
 @app.post("/api/sim/sell")
 def sim_sell():
     body = request.get_json(silent=True) or {}
-    code = str(body.get("code", "")).strip()
+    code = normalize_stock_code(body.get("code", ""))
     try:
         shares = int(body.get("shares", 0))
     except Exception:
@@ -556,10 +626,12 @@ def sim_sell():
 def stocks():
     with cache_lock:
         rows = market_cache.get("stocks", {}).get("data") or []
+    # 选股接口只给用户约定的沪深主板，不把创业板/科创板/北交所混入候选。
+    rows = [r for r in rows if is_main_board_code(r.get("代码") or r.get("股票代码") or r.get("code"))]
     query = request.args.get("q", "").strip().lower()
     if query:
-        rows = [r for r in rows if query in str(r.get("代码", r.get("股票代码", ""))).lower() or query in str(r.get("名称", r.get("股票简称", ""))).lower()]
-    return jsonify({"status": "ok" if rows else "unavailable", "data": rows[:100], "count": len(rows), "message": "显示真实快照数据；仅返回前100条匹配结果。"})
+        rows = [r for r in rows if query in normalize_stock_code(r.get("代码", r.get("股票代码", ""))).lower() or query in str(r.get("名称", r.get("股票简称", ""))).lower()]
+    return jsonify({"status": "ok" if rows else "unavailable", "data": rows[:100], "count": len(rows), "message": "仅展示沪深主板真实行情；已排除创业板、科创板和北交所；仅返回前100条匹配结果。"})
 
 @app.get("/api/report")
 def report():
@@ -576,8 +648,8 @@ def report():
     def rank(rows):
         normalized = []
         for row in rows:
-            name = field(row, ["板块名称", "名称", "板块", "行业名称"])
-            change = as_float(field(row, ["涨跌幅", "涨幅", "涨跌幅(%)"]))
+            name = field(row, ["板块名称", "名称", "板块", "行业名称", "行业", "name"])
+            change = as_float(field(row, ["涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%", "涨跌幅（%）", "pct_change", "change_percent"]))
             if name is not None and change is not None:
                 normalized.append({"name": name, "change_percent": change, "leader": field(row, ["领涨股票", "领涨股"]), "leader_change": field(row, ["领涨股票-涨跌幅", "领涨股涨跌幅"])})
         return sorted(normalized, key=lambda x: x["change_percent"], reverse=True)
@@ -594,7 +666,8 @@ def report():
         "industry_top10": top_industry,
         "concept_top10": top_concept,
         "notes": [
-            "板块排名依据接口返回的涨跌幅，盘中数据不等于收盘排名。",
+            "板块排名依据通过字段校验的当日行情快照；行业板块可使用同花顺实时汇总兜底，盘中数据不等于收盘排名。",
+            "若概念板块接口不可用，概念榜会明确留空；不会把同花顺历史概念事件表或名称列表误当成当日涨幅排名。",
             "板块领涨股不自动等同于龙一、龙二、龙三；还需核对连板高度、成交额、换手率、封板质量、题材持续性和消息来源。",
             "涨跌停数量如标注为估算，不能当作交易所官方精确统计。",
             "报告仅使用实际获取的数据，不会补造缺失行情。"
@@ -603,13 +676,32 @@ def report():
 
 @app.get("/api/test-sectors")
 def test_sectors():
-    # 不再逐个请求多个慢接口，避免诊断接口长时间占用服务。
+    """轻量诊断：列出板块相关接口是否存在和实际应用的优先路径。"""
     try:
         import akshare as ak
-        names = ["stock_board_industry_name_em", "stock_board_concept_name_em", "stock_board_industry_index_ths", "stock_board_concept_index_ths"]
-        return jsonify({name: {"exists": callable(getattr(ak, name, None))} for name in names})
+        names = [
+            "stock_board_industry_name_em", "stock_board_industry_summary_ths",
+            "stock_board_concept_name_em", "stock_board_concept_spot_em",
+            "stock_board_industry_name_ths", "stock_board_concept_name_ths",
+            "stock_board_concept_summary_ths",
+        ]
+        functions = {name: {"exists": callable(getattr(ak, name, None))} for name in names}
+        with cache_lock:
+            sector_status = market_cache.get("sectors", {}).get("status")
+            sector_message = market_cache.get("sectors", {}).get("message")
+        return jsonify({
+            "app_version": APP_VERSION,
+            "functions": functions,
+            "sector_cache_status": sector_status,
+            "sector_cache_message": sector_message,
+            "strategy": {
+                "industry": "东方财富行业快照优先；失败时使用同花顺行业实时汇总",
+                "concept": "仅接受包含当日涨跌幅的东方财富概念快照；不把历史事件表或名称列表当成排名",
+            },
+            "time": now_iso(),
+        })
     except Exception as exc:
-        return jsonify({"error": f"{type(exc).__name__}: {str(exc)[:160]}"}), 500
+        return jsonify({"app_version": APP_VERSION, "error": f"{type(exc).__name__}: {str(exc)[:160]}", "time": now_iso()}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
