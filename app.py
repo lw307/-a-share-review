@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-sectorfix-v3"
+APP_VERSION = "20261021-sectorfix-v4"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -333,9 +333,11 @@ def fetch_sector_data():
                 ("东方财富行业快照", "stock_board_industry_name_em", None),
                 ("同花顺行业实时汇总", "stock_board_industry_summary_ths", None),
             ],
-            # name_em 在接口可用时直接返回板块涨跌幅；THS concept name/summary 是名称或事件表，不作涨幅排名。
+            # 优先尝试概念板块实时快照接口；只有返回板块名称+有效涨跌幅才会入榜。
+            # name_em 通常只是名称列表，保留为最后尝试项但会由 sector_frame_is_snapshot 严格校验。
             "concept": [
-                ("东方财富概念快照", "stock_board_concept_name_em", None),
+                ("东方财富概念实时快照", "stock_board_concept_spot_em", None),
+                ("东方财富概念快照备用", "stock_board_concept_name_em", None),
             ],
         }
         for key, providers in sources.items():
@@ -696,7 +698,7 @@ def test_sectors():
             "sector_cache_message": sector_message,
             "strategy": {
                 "industry": "东方财富行业快照优先；失败时使用同花顺行业实时汇总",
-                "concept": "仅接受包含当日涨跌幅的东方财富概念快照；不把历史事件表或名称列表当成排名",
+                "concept": "优先尝试 stock_board_concept_spot_em 实时快照；仅接受包含有效当日涨跌幅的数据，不把名称列表当成排名",
             },
             "time": now_iso(),
         })
