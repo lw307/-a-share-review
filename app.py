@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-sectorfix-v7"
+APP_VERSION = "20261021-sectorfix-v8"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -363,6 +363,39 @@ def fetch_concept_direct_em():
                 time.sleep(0.5)
     return [], last_error
 
+def fetch_concept_sina():
+    """使用新浪财经概念板块实时汇总作为东方财富不可用时的备用源。"""
+    import akshare as ak
+    fn = getattr(ak, "stock_sector_spot", None)
+    if not callable(fn):
+        raise RuntimeError("AKShare 中不存在 stock_sector_spot")
+    df = fn(indicator="概念")
+    valid, reason = sector_frame_is_snapshot(df)
+    if not valid:
+        raise RuntimeError(reason or "新浪概念板块返回内容未通过行情快照校验")
+    name_col = first_column(df, ["板块名称", "板块", "名称", "name"])
+    change_col = first_column(df, ["涨跌幅", "涨幅", "pct_change", "change_percent"])
+    records = []
+    for row in safe_records(df):
+        name = row.get(name_col)
+        change = as_float(row.get(change_col))
+        if not name or change is None:
+            continue
+        row["板块名称"] = name
+        row["涨跌幅"] = change
+        # 新浪字段代表该概念当前领涨个股及其涨幅；代码保留用于主板校验。
+        if row.get("领涨股票") in (None, ""):
+            row["领涨股票"] = row.get("股票名称")
+        if row.get("领涨股票代码") in (None, ""):
+            row["领涨股票代码"] = row.get("股票代码")
+        if row.get("领涨股票-涨跌幅") in (None, ""):
+            row["领涨股票-涨跌幅"] = row.get("个股-涨跌幅")
+        row["数据来源"] = "新浪财经概念板块实时汇总"
+        records.append(row)
+    if len(records) < 10:
+        raise RuntimeError(f"新浪概念板块有效记录不足10条：{len(records)}")
+    return records
+
 def fetch_sector_data():
     """获取板块当日快照。行业增加同花顺实时汇总兜底；概念不拿历史事件表冒充实时排名。"""
     global sector_fetch_running, sector_last_attempt
@@ -381,11 +414,9 @@ def fetch_sector_data():
                 ("东方财富行业快照", "stock_board_industry_name_em", None),
                 ("同花顺行业实时汇总", "stock_board_industry_summary_ths", None),
             ],
-            # 优先尝试概念板块实时快照接口；只有返回板块名称+有效涨跌幅才会入榜。
-            # name_em 通常只是名称列表，保留为最后尝试项但会由 sector_frame_is_snapshot 严格校验。
+            # 概念优先使用东方财富实时快照；名称清单不再作为行情来源。
             "concept": [
                 ("东方财富概念实时快照", "stock_board_concept_spot_em", None),
-                ("东方财富概念快照备用", "stock_board_concept_name_em", None),
             ],
         }
         for key, providers in sources.items():
@@ -420,7 +451,13 @@ def fetch_sector_data():
                     break
                 except Exception as exc:
                     errors.append(f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:100]}")
-        # 东方财富 AKShare 包装接口失败时，使用更小分页的直接快照请求重试；不读取历史事件表。
+        # 东方财富失败后，先切换新浪概念实时汇总，再尝试东方财富直连接口。
+        if not result["concept"]:
+            try:
+                result["concept"] = fetch_concept_sina()
+                source_used["concept"] = "新浪财经概念板块实时汇总"
+            except Exception as exc:
+                errors.append(f"concept/sina_fallback：{type(exc).__name__}: {str(exc)[:120]}")
         if not result["concept"]:
             direct_records, direct_error = fetch_concept_direct_em()
             if direct_records:
@@ -819,7 +856,7 @@ def test_sectors():
             "stock_board_industry_name_em", "stock_board_industry_summary_ths",
             "stock_board_concept_name_em", "stock_board_concept_spot_em",
             "stock_board_industry_name_ths", "stock_board_concept_name_ths",
-            "stock_board_concept_summary_ths", "stock_board_concept_index_ths",
+            "stock_board_concept_summary_ths", "stock_board_concept_index_ths", "stock_sector_spot",
         ]
         functions = {name: {"exists": callable(getattr(ak, name, None))} for name in names}
         with cache_lock:
@@ -837,7 +874,7 @@ def test_sectors():
             "fetch_running": {"market": market_fetch_running, "sectors": sector_fetch_running},
             "strategy": {
                 "industry": "东方财富行业快照优先；失败时使用同花顺行业实时汇总",
-                "concept": "优先尝试 stock_board_concept_spot_em；失败后用东方财富直接接口小分页重试（前40名）；仅接受含有效当日涨跌幅的数据。名称清单、历史指数和事件表不会被当作实时排名",
+                "concept": "优先尝试 stock_board_concept_spot_em；失败后尝试新浪 stock_sector_spot(indicator=概念)；再尝试东方财富直接接口小分页。名称清单、历史指数和事件表不会被当作实时排名",
             },
             "time": now_iso(),
         })
@@ -865,6 +902,33 @@ def test_concept_fallback():
         })
     except Exception as exc:
         return jsonify({"app_version": APP_VERSION, "error": f"{type(exc).__name__}: {str(exc)[:180]}", "time": now_iso()}), 200
+
+
+@app.get("/api/test-concept-sina")
+def test_concept_sina():
+    """手动测试新浪财经概念板块实时汇总；只返回诊断结果，不修改正式缓存。"""
+    try:
+        records = fetch_concept_sina()
+        return jsonify({
+            "app_version": APP_VERSION,
+            "source": "Sina Finance stock_sector_spot(indicator=概念)",
+            "row_count": len(records),
+            "snapshot_validation_passed": len(records) >= 10 and all(as_float(x.get("涨跌幅")) is not None for x in records[:20]),
+            "columns": list(records[0].keys()) if records else [],
+            "preview_first_5_rows": records[:5],
+            "warning": "本接口只做诊断，不修改正式板块缓存；是否接入正式排名还需核对线上返回字段和数据时效。",
+            "time": now_iso(),
+        })
+    except Exception as exc:
+        return jsonify({
+            "app_version": APP_VERSION,
+            "source": "Sina Finance stock_sector_spot(indicator=概念)",
+            "row_count": 0,
+            "snapshot_validation_passed": False,
+            "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+            "warning": "本接口只做诊断，不修改正式板块缓存。",
+            "time": now_iso(),
+        }), 200
 
 
 @app.get("/api/test-concept-source")
