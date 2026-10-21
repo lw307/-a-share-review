@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-mainboard-v14"
+APP_VERSION = "20261021-mainboard-v15"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -868,6 +868,10 @@ def report():
             change = as_float(field(row, ["涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%", "涨跌幅（%）", "pct_change", "change_percent"]))
             if name is None or change is None:
                 continue
+            # Index/benchmark rows are not stock-sector themes and should not pollute sector rankings.
+            normalized_name = str(name).strip().upper().replace(" ", "")
+            if normalized_name in {"科创50", "创业板指", "上证指数", "上证50", "沪深300", "深证成指", "中证500", "中证1000", "北证50"}:
+                continue
             leader_code = field(row, ["领涨股票代码", "领涨股代码", "领涨股票-代码", "股票代码", "代码", "code"])
             up_count = as_float(field(row, ["上涨家数", "上涨数量", "上涨公司数", "上涨家数(只)"]))
             down_count = as_float(field(row, ["下跌家数", "下跌数量", "下跌公司数", "下跌家数(只)"]))
@@ -890,8 +894,11 @@ def report():
         groups = [
             ("水产与水域", ("水产品", "水域改革", "水产", "海洋渔业")),
             ("农牧养殖", ("猪肉", "鸡肉", "养殖", "畜禽", "生猪")),
-            ("软件与网络安全", ("国产软件", "信息安全", "网络安全", "信创", "软件服务")),
+            ("软件与网络安全", ("国产软件", "信息安全", "网络安全", "信创", "软件服务", "网络游戏")),
             ("华为产业链", ("华为汽车", "华为鸿蒙", "华为概念", "华为海思", "华为算力")),
+            ("通信与5G", ("5G", "宽带提速", "通信设备", "卫星通信")),
+            ("军工与高端装备", ("国防军工", "军工", "航空装备", "航天装备")),
+            ("核电与能源装备", ("核电", "核能", "核电核能")),
         ]
         for label, keys in groups:
             if any(k in text for k in keys):
@@ -957,6 +964,30 @@ def report():
 
     ranked_industry = score_sectors(rank(industry))
     ranked_concept = score_sectors(rank(concept))
+
+    # Theme-level view: consolidate overlapping concept names so related tags do not masquerade as independent market leaders.
+    grouped = {}
+    for row in ranked_concept:
+        group = row.get("theme_group") or row["name"]
+        item = grouped.setdefault(group, {"name": group, "constituent_sectors": [], "scores": [], "changes": [], "verified_leaders": []})
+        item["constituent_sectors"].append(row["name"])
+        if row.get("strength_score") is not None:
+            item["scores"].append(float(row["strength_score"]))
+        if row.get("change_percent") is not None:
+            item["changes"].append(float(row["change_percent"]))
+        if row.get("leader_verified_main_board") and row.get("leader"):
+            item["verified_leaders"].append({"name": row["leader"], "code": row["leader_code"], "change_percent": row.get("leader_change"), "sector": row["name"]})
+    theme_strength_ranked = []
+    for item in grouped.values():
+        item["score"] = round(sum(item["scores"]) / len(item["scores"]), 1) if item["scores"] else None
+        item["average_change_percent"] = round(sum(item["changes"]) / len(item["changes"]), 3) if item["changes"] else None
+        item["constituent_count"] = len(item["constituent_sectors"])
+        item["constituent_sectors"] = item["constituent_sectors"][:8]
+        item["verified_leaders"] = sorted(item["verified_leaders"], key=lambda x: x.get("change_percent") if x.get("change_percent") is not None else -999, reverse=True)[:3]
+        item["interpretation"] = "归并观察值，不是独立资金流指标；组成概念可能重叠，不能将分数理解为主线持续性预测。"
+        theme_strength_ranked.append(item)
+    theme_strength_ranked.sort(key=lambda x: (x["score"] if x["score"] is not None else -1, x["average_change_percent"] if x["average_change_percent"] is not None else -999), reverse=True)
+
     # Keep legacy TOP10 sorted by raw daily change for the existing homepage;
     # the new score-sorted rankings are exposed separately for the next UI update.
     top_industry = sorted(ranked_industry, key=lambda x: x["change_percent"], reverse=True)[:10]
@@ -1154,6 +1185,7 @@ def report():
         "concept_top10": top_concept,
         "industry_strength_ranked": ranked_industry[:30],
         "concept_strength_ranked": ranked_concept[:30],
+        "theme_strength_ranked": theme_strength_ranked[:15],
         "main_board_watchlist": main_board_watchlist,
         "main_board_watchlist_count": len(main_board_watchlist),
         "market_emotion": emotion,
@@ -1166,7 +1198,8 @@ def report():
             "weights": {"板块涨幅排名": "50%", "板块上涨广度排名": "20%（字段可用时）", "成交额排名": "15%（字段可用时）", "领涨股涨幅排名": "15%（字段可用时）"},
             "warning": "只比较本次接口返回的板块横截面，不代表资金流向的精确测量，也不预测未来收益。",
             "data_quality": "每个板块新增 score_data_quality.coverage_percent 和 missing_components；数据不完整时 strength_label 会注明评分部分缺失。",
-            "theme_persistence": "持续性评分需要跨交易日历史数据；目前不以单日快照伪造持续性分数。"
+            "theme_persistence": "持续性评分需要跨交易日历史数据；目前不以单日快照伪造持续性分数。",
+            "theme_grouping": "v15 新增主线归并观察：对相关概念做分组展示，采用组内可用板块评分均值；这不是独立资金流指标，组内概念可能重叠。"
         },
         "dragon_analysis_status": {
             "dragon1": "仅在接口提供股票代码且代码属于沪深主板时展示经核验领涨股。",
@@ -1178,7 +1211,8 @@ def report():
             "板块接口返回的领涨股只有在返回股票代码且确认属于沪深主板时才显示；无法核验的领涨股会留空，避免把创业板、科创板或北交所个股混入候选。",
             "超过30分钟的数据会标记为可能过期；生成时间不代表行情时间，盘中快照不等于收盘数据。",
             "概念板块备用源必须提供有效的当日涨跌幅；同花顺名称清单或历史指数序列不会被伪装成实时概念排名。",
-            "v9新增当日板块相对强度评分及主题归类提示；同名/相近题材只做归类提示，不擅自合并原始板块。",
+            "v15新增主线归并观察，用于识别重叠概念；归并分数只是组内可用板块评分均值，不代表资金流或持续性。",
+            "v15过滤常见指数/基准名称，避免指数混入概念板块排名。",
             "全市场主板强势观察榜只依据主板个股快照排序，不代表其属于对应板块的龙二/龙三，也不是自动买入建议。",
             "当前数据源不含完整的板块成分股映射和跨日历史，无法可靠给出每个板块的龙二/龙三及主线持续性分数；缺失内容会明确说明。",
             "涨跌停数量如标注为估算，不能当作交易所官方精确统计。",
