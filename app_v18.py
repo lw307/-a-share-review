@@ -437,17 +437,17 @@ def fetch_sector_data():
         result = {"industry": [], "concept": []}
         source_used = {}
         errors = []
-        sources = {
-            # stock_board_industry_name_ths 只是行业名称列表，不能当行情榜；summary_ths 才是行情汇总。
-            "industry": [
-                ("东方财富行业实时快照", "stock_board_industry_spot_em", None),
-                ("同花顺行业实时汇总", "stock_board_industry_summary_ths", None),
-            ],
-            # 概念优先使用东方财富实时快照；名称清单不再作为行情来源。
-            "concept": [
-                ("东方财富概念实时快照", "stock_board_concept_spot_em", None),
-            ],
-        }
+       # 优先获取已经通过诊断测试的概念板块数据，
+# 避免行业接口异常时，概念数据迟迟无法进入正式缓存。
+sources = {
+    "concept": [
+        ("东方财富概念实时快照", "stock_board_concept_spot_em", None),
+    ],
+    "industry": [
+        ("东方财富行业实时快照", "stock_board_industry_spot_em", None),
+        ("同花顺行业实时汇总", "stock_board_industry_summary_ths", None),
+    ],
+}
         for key, providers in sources.items():
             for source_label, func_name, args in providers:
                 try:
