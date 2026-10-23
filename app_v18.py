@@ -432,7 +432,7 @@ def fetch_sector_data():
         return
     sector_fetch_running = True
     sector_last_attempt = datetime.now(TZ).timestamp()
-        try:
+    try:
         import akshare as ak
         result = {"industry": [], "concept": []}
         source_used = {}
