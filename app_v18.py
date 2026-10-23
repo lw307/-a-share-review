@@ -439,7 +439,7 @@ def fetch_sector_data():
         errors = []
                # 优先获取已经通过诊断测试的概念板块数据，
         # 避免行业接口异常时，概念数据迟迟无法进入正式缓存。
-        sources = {
+                sources = {
             "concept": [
                 ("新浪概念实时汇总", "stock_sector_spot", {"indicator": "概念"}),
                 ("东方财富概念实时快照", "stock_board_concept_spot_em", None),
