@@ -432,16 +432,14 @@ def fetch_sector_data():
         return
     sector_fetch_running = True
     sector_last_attempt = datetime.now(TZ).timestamp()
-    try:
+        try:
         import akshare as ak
         result = {"industry": [], "concept": []}
         source_used = {}
         errors = []
-               # 优先获取已经通过诊断测试的概念板块数据，
-        # 避免行业接口异常时，概念数据迟迟无法进入正式缓存。
-                sources = {
+
+        sources = {
             "concept": [
-                ("新浪概念实时汇总", "stock_sector_spot", {"indicator": "概念"}),
                 ("东方财富概念实时快照", "stock_board_concept_spot_em", None),
             ],
             "industry": [
@@ -449,16 +447,7 @@ def fetch_sector_data():
                 ("同花顺行业实时汇总", "stock_board_industry_summary_ths", None),
             ],
         }
-# 避免行业接口异常时，概念数据迟迟无法进入正式缓存。
-sources = {
-    "concept": [
-        ("东方财富概念实时快照", "stock_board_concept_spot_em", None),
-    ],
-    "industry": [
-        ("东方财富行业实时快照", "stock_board_industry_spot_em", None),
-        ("同花顺行业实时汇总", "stock_board_industry_summary_ths", None),
-    ],
-}
+
         for key, providers in sources.items():
             for source_label, func_name, args in providers:
                 try:
@@ -466,33 +455,51 @@ sources = {
                     if not callable(fn):
                         errors.append(f"{key}/{func_name}：函数不存在")
                         continue
+
                     df = fn(**(args or {}))
                     valid, reason = sector_frame_is_snapshot(df)
+
                     if not valid:
                         raise RuntimeError(reason or "非有效板块行情快照")
-                    # Normalize only key columns; preserve all original fields for the UI/report.
-                    name_col = first_column(df, ["板块名称", "名称", "板块", "行业名称", "行业", "name"])
-                    change_col = first_column(df, ["涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%", "涨跌幅（%）", "pct_change", "change_percent"])
+
+                    name_col = first_column(
+                        df,
+                        ["板块名称", "名称", "板块", "行业名称", "行业", "name"]
+                    )
+                    change_col = first_column(
+                        df,
+                        ["涨跌幅", "涨幅", "涨跌幅(%)", "涨跌幅%", "涨跌幅（%）",
+                         "pct_change", "change_percent"]
+                    )
+
                     records = safe_records(df)
                     normalized = []
+
                     for row in records:
                         if row.get("板块名称") in (None, ""):
                             row["板块名称"] = row.get(name_col)
+
                         if row.get("涨跌幅") in (None, ""):
                             row["涨跌幅"] = row.get(change_col)
-                        # Normalize optional leader aliases for the frontend.
+
                         if row.get("领涨股票") in (None, ""):
-                            row["领涨股票"] = row.get("领涨股") or row.get("领涨股票名称")
+                            row["领涨股票"] = (
+                                row.get("领涨股") or row.get("领涨股票名称")
+                            )
+
                         if row.get("领涨股票-涨跌幅") in (None, ""):
                             row["领涨股票-涨跌幅"] = row.get("领涨股涨跌幅")
+
                         normalized.append(row)
+
                     result[key] = normalized
                     source_used[key] = source_label
                     break
+
                 except Exception as exc:
-                    errors.append(f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:100]}")
-        # 东方财富失败后，先切换新浪概念实时汇总，再尝试东方财富直连接口。
-        if not result["concept"]:
+                    errors.append(
+                        f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:100]}"
+                    )
             try:
                 result["concept"] = fetch_concept_sina()
                 source_used["concept"] = "新浪财经概念板块实时汇总"
