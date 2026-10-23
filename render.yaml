@@ -1,9 +1,12 @@
 services:
   - type: web
-    name: a-share-review
+    name: longtou-leida
     runtime: python
-    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --workers 1 --threads 2 --timeout 120 app_v18:app
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
     healthCheckPath: /api/health
-    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SIM_DB_PATH
+        value: /var/data/simulation.db

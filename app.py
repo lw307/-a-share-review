@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-mainboard-v16"
+APP_VERSION = "20261024-mainboard-v19.2-normalizefix"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -99,10 +99,11 @@ def normalize_stock_snapshot(df, source_name):
         "最新价": ["最新价", "最新", "现价", "trade", "price"],
         "涨跌幅": ["涨跌幅", "涨幅", "change_percent", "changepercent"],
         "成交额": ["成交额", "成交金额", "amount"],
-        "成交量": ["成交量", "volume"],
-        "今开": ["今开", "open"],
-        "最高": ["最高", "high"],
-        "最低": ["最低", "low"],
+        "成交量": ["成交量", "成交股数", "volume", "vol"],
+        "换手率": ["换手率", "turnover_rate", "turnover", "换手"],
+        "今开": ["今开", "开盘", "open", "开盘价"],
+        "最高": ["最高", "high", "最高价"],
+        "最低": ["最低", "low", "最低价"],
     }
     normalized = pd.DataFrame(index=out.index)
     for target, candidates in aliases.items():
@@ -114,6 +115,28 @@ def normalize_stock_snapshot(df, source_name):
     normalized["代码"] = normalized["代码"].map(normalize_stock_code)
     normalized["_source"] = source_name
     return normalized
+
+
+def call_with_timeout(fn, timeout_seconds=22):
+    """在守护线程中调用可能阻塞的行情接口，超时后允许主刷新流程继续尝试备用源。"""
+    result = {"value": None, "error": None}
+    done = threading.Event()
+
+    def runner():
+        try:
+            result["value"] = fn()
+        except BaseException as exc:
+            result["error"] = exc
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=runner, daemon=True)
+    worker.start()
+    if not done.wait(timeout_seconds):
+        raise TimeoutError(f"行情接口超过 {timeout_seconds} 秒仍未返回")
+    if result["error"] is not None:
+        raise result["error"]
+    return result["value"]
 
 def fetch_market_data():
     """获取指数与个股快照；耗时操作放在后台线程。"""
@@ -140,7 +163,7 @@ def fetch_market_data():
                 fn = getattr(ak, func_name, None)
                 if not callable(fn):
                     continue
-                df = fn()
+                df = call_with_timeout(fn, timeout_seconds=18)
                 if df is None or df.empty:
                     msg = f"{source_name}指数接口返回空数据"
                     errors.append(msg)
@@ -167,7 +190,7 @@ def fetch_market_data():
                     indices.append(row)
                 source_attempts.append({"category": "indices", "source": source_name, "function": func_name, "status": "ok" if len(picked) else "no_target_rows", "row_count": len(df), "matched_rows": len(picked), "columns": list(map(str, list(df.columns)[:20]))})
             except Exception as exc:
-                msg = f"{source_name}指数：{type(exc).__name__}: {str(exc)[:100]}"
+                msg = f"{source_name}指数：{type(exc).__name__}: {str(exc)[:140]}"
                 errors.append(msg)
                 source_attempts.append({"category": "indices", "source": source_name, "function": func_name, "status": "error", "error": msg})
 
@@ -182,7 +205,7 @@ def fetch_market_data():
                 if not callable(fn):
                     errors.append(f"{source_name}个股接口函数不存在：{func_name}")
                     continue
-                raw = fn()
+                raw = call_with_timeout(fn, timeout_seconds=22)
                 candidate = normalize_stock_snapshot(raw, source_name)
                 if candidate is None or candidate.empty:
                     cols = list(map(str, list(raw.columns)[:20])) if raw is not None and hasattr(raw, "columns") else []
@@ -198,7 +221,7 @@ def fetch_market_data():
                 source_attempts.append({"category": "stocks", "source": source_name, "function": func_name, "status": "ok", "row_count": len(candidate), "columns": list(map(str, list(raw.columns)[:20]))})
                 break
             except Exception as exc:
-                msg = f"{source_name}个股快照：{type(exc).__name__}: {str(exc)[:100]}"
+                msg = f"{source_name}个股快照：{type(exc).__name__}: {str(exc)[:140]}"
                 errors.append(msg)
                 # Avoid duplicating an already-recorded schema/row-count diagnostic.
                 if not source_attempts or source_attempts[-1].get("function") != func_name or source_attempts[-1].get("category") != "stocks":
@@ -312,7 +335,7 @@ def fetch_market_data():
                 "attempts": source_attempts[:12],
                 "stock_snapshot_rows": len(stocks),
                 "index_rows": len(unique_indices),
-                "note": "个股快照至少100行才作为全市场统计来源；接口错误、字段不匹配和样本不足分别记录。"
+                "note": "个股快照至少100行才作为全市场统计来源；每个行情调用有独立超时，接口错误、字段不匹配、超时和样本不足分别记录。"
             }
             market_cache["updated_at"] = now_iso()
             available = sum(market_cache[k]["status"] in ("ok", "partial") for k in ["indices", "breadth", "amount", "limit_stats"])
@@ -479,7 +502,7 @@ def fetch_sector_data():
                     source_used[key] = source_label
                     break
                 except Exception as exc:
-                    errors.append(f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:100]}")
+                    errors.append(f"{key}/{func_name}：{type(exc).__name__}: {str(exc)[:140]}")
         # 东方财富失败后，先切换新浪概念实时汇总，再尝试东方财富直连接口。
         if not result["concept"]:
             try:
@@ -583,8 +606,14 @@ def init_db():
         )""")
         con.execute("""CREATE TABLE IF NOT EXISTS stock_daily_history (
             trade_date TEXT NOT NULL, code TEXT NOT NULL, name TEXT, change_percent REAL,
-            latest_price REAL, amount REAL, PRIMARY KEY(trade_date, code)
+            latest_price REAL, amount REAL, open_price REAL, high_price REAL, low_price REAL,
+            volume REAL, turnover_rate REAL, PRIMARY KEY(trade_date, code)
         )""")
+        # Schema migration for existing Render/SQLite databases; safe to run on every startup.
+        existing_cols = {r[1] for r in con.execute("PRAGMA table_info(stock_daily_history)").fetchall()}
+        for col, typ in (("open_price", "REAL"), ("high_price", "REAL"), ("low_price", "REAL"), ("volume", "REAL"), ("turnover_rate", "REAL")):
+            if col not in existing_cols:
+                con.execute(f"ALTER TABLE stock_daily_history ADD COLUMN {col} {typ}")
         con.execute("""CREATE TABLE IF NOT EXISTS account_equity_history (
             record_date TEXT PRIMARY KEY, equity REAL NOT NULL, cash REAL NOT NULL,
             market_value REAL NOT NULL, profit REAL NOT NULL, return_percent REAL NOT NULL
@@ -829,9 +858,15 @@ def save_daily_research_history(trade_date, industry_rows, concept_rows, stock_r
             price = as_float(stock.get("最新价") or stock.get("最新") or stock.get("现价"))
             amount = as_float(stock.get("成交额") or stock.get("成交金额") or stock.get("amount"))
             if is_main_board_code(code) and name and change is not None:
+                open_price = as_float(stock.get("今开") or stock.get("开盘") or stock.get("open"))
+                high_price = as_float(stock.get("最高") or stock.get("最高价") or stock.get("high"))
+                low_price = as_float(stock.get("最低") or stock.get("最低价") or stock.get("low"))
+                volume = as_float(stock.get("成交量") or stock.get("成交股数") or stock.get("volume"))
+                turnover = as_float(stock.get("换手率") or stock.get("turnover_rate"))
                 con.execute("""INSERT OR REPLACE INTO stock_daily_history
-                    (trade_date, code, name, change_percent, latest_price, amount) VALUES(?,?,?,?,?,?)""",
-                    (trade_date, code, name, change, price, amount))
+                    (trade_date, code, name, change_percent, latest_price, amount, open_price, high_price, low_price, volume, turnover_rate)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (trade_date, code, name, change, price, amount, open_price, high_price, low_price, volume, turnover))
         con.commit()
 
 def load_history(trade_date):
@@ -1063,11 +1098,26 @@ def report():
                 per_name.setdefault(r["sector_name"], {"days_seen": 0, "top10_days": 0, "positive_days": 0, "changes": [], "scores": []})["top10_days"] += 1
         entries=[]
         for name, item in per_name.items():
-            entries.append({"name": name, "observed_days": item["days_seen"], "top10_days": item["top10_days"],
+            observed_days = int(item["days_seen"])
+            # A one- or two-day sample is not enough to assess persistence. Keep the raw
+            # diagnostics, but return no numeric score until at least three observations.
+            raw_score = round((item["top10_days"] / max(1, len(history_dates))) * 70 +
+                              (item["positive_days"] / max(1, observed_days)) * 30, 1)
+            if observed_days < 3:
+                persistence_score = None
+                persistence_status = "样本不足，暂不评定" if observed_days < 3 else "初步观察"
+            elif observed_days < 5:
+                persistence_score = raw_score
+                persistence_status = "初步观察：历史样本有限"
+            else:
+                persistence_score = raw_score
+                persistence_status = "可评估：仍需结合市场环境判断"
+            entries.append({"name": name, "observed_days": observed_days, "top10_days": item["top10_days"],
                 "positive_days": item["positive_days"], "avg_change": round(sum(item["changes"])/len(item["changes"]), 2) if item["changes"] else None,
                 "avg_score": round(sum(item["scores"])/len(item["scores"]), 1) if item["scores"] else None,
-                "persistence_score": round((item["top10_days"] / max(1, len(history_dates))) * 70 + (item["positive_days"] / max(1, item["days_seen"])) * 30, 1)})
-        persistence_by_type[sector_type] = sorted(entries, key=lambda x: (x["persistence_score"], x["avg_change"] or -999), reverse=True)[:10]
+                "persistence_score": persistence_score, "persistence_status": persistence_status,
+                "persistence_raw_score_for_diagnostics": raw_score})
+        persistence_by_type[sector_type] = sorted(entries, key=lambda x: (x["persistence_score"] is not None, x["persistence_score"] if x["persistence_score"] is not None else -1, x["avg_change"] if x["avg_change"] is not None else -999), reverse=True)[:10]
 
     # Market emotion score with explicit data coverage; estimate-based limit statistics are marked as lower confidence.
     breadth_data = (snapshot.get("breadth") or {}).get("data") or {}
@@ -1135,6 +1185,56 @@ def report():
     leader_candidates.sort(key=lambda x:(x["candidate_score"],x["change_percent"],x["amount"] or 0),reverse=True)
     leader_candidates=leader_candidates[:10]
 
+    # v18: three transparent strategy lenses. Daily snapshots are NOT OHLCV candles;
+    # therefore these are screening candidates, never confirmed breakouts or buy signals.
+    strategy_models = {
+        "generated_at": now_iso(),
+        "data_limitations": [
+            "v19 开始逐日保存真实行情快照中的开盘、最高、最低、价格、涨跌幅、成交额、成交量和换手率（数据源实际提供什么就保存什么）。",
+            "数据库升级不会补造过去缺失的历史；新历史从程序成功记录的交易日开始累积，历史样本不完整时策略会主动少报或不报。",
+            "快照中的最高/最低可能是盘中值，不应冒充最终日K；箱体突破、均线支撑等确认仍需完整、可靠的日线数据。",
+            "候选分数用于同日筛选和复盘，不是盈利概率，也不保证次日上涨。"
+        ],
+        "models": []
+    }
+    strategy_buckets = {"趋势龙头回调": [], "箱体突破": [], "主线低位补涨": []}
+    for item in stock_by_code.values():
+        hist = sorted(stock_hist_by_code.get(item["code"], []), key=lambda x: x.get("trade_date", ""))
+        changes = [as_float(h.get("change_percent")) for h in hist]
+        changes = [v for v in changes if v is not None]
+        observed = len(changes)
+        pos_days = sum(v > 0 for v in changes[-5:])
+        strong_days = sum(v >= 5 for v in changes[-5:])
+        latest_change = item.get("change_percent")
+        # These are deliberately conservative proxy scores based on available snapshots only.
+        trend_score = max(0, min(100, 35 + pos_days * 9 + (12 if latest_change is not None and 0 <= latest_change <= 4 else 0) - (18 if latest_change is not None and latest_change >= 7 else 0)))
+        breakout_score = max(0, min(100, 30 + (25 if latest_change is not None and latest_change >= 3 else 0) + (15 if item.get("amount") else 0) + min(20, strong_days * 5)))
+        low_follow_score = max(0, min(100, 35 + (20 if latest_change is not None and -1 <= latest_change <= 3 else 0) + (10 if pos_days >= 2 else 0) + (10 if item.get("amount") else 0) - (15 if latest_change is not None and latest_change >= 7 else 0)))
+        common = {"code": item["code"], "name": item["name"], "latest_price": item.get("latest_price"),
+                  "change_percent": latest_change, "amount": item.get("amount"), "observed_days": observed,
+                  "history_changes": changes[-5:], "confirmed_pattern": False,
+                  "warning": "仅为快照代理筛选；缺少完整OHLCV/换手及板块成分映射，不能确认形态或直接据此买入。"}
+        if observed >= 5 and pos_days >= 2 and latest_change is not None and -1.5 <= latest_change <= 4.5:
+            strategy_buckets["趋势龙头回调"].append({**common, "score": round(trend_score, 1),
+                "reason": f"最近最多5个已记录交易日中上涨{pos_days}天，当前涨幅处于温和区间；仅作为趋势回调观察，尚未核验均线与回调结构。",
+                "entry_condition": "先补齐日K线；价格守住已验证的趋势支撑、回调缩量且再度放量转强后才进一步评估。",
+                "invalid_condition": "跌破经K线确认的前低/趋势支撑，或板块主线明显退潮。"})
+        if observed >= 5 and latest_change is not None and latest_change >= 3 and item.get("amount"):
+            strategy_buckets["箱体突破"].append({**common, "score": round(breakout_score, 1),
+                "reason": "当日涨幅与成交额快照较强；没有箱体高点及量能均值，故只列突破待核验，不认定已突破。",
+                "entry_condition": "用至少20日真实日K线确认箱体上沿；收盘有效站上上沿且成交额/量能高于近期均值，再观察回踩承接。",
+                "invalid_condition": "突破后收盘重新跌回箱体，或放量冲高回落且板块同步走弱。"})
+        if observed >= 5 and latest_change is not None and -1 <= latest_change <= 3 and item.get("amount"):
+            strategy_buckets["主线低位补涨"].append({**common, "score": round(low_follow_score, 1),
+                "reason": "当日涨幅不极端且有成交额数据；因缺少可靠估值/阶段涨幅与板块成分映射，暂不能证明处于低位或具备补涨关系。",
+                "entry_condition": "先确认所属主线仍居强势排名前列，再用多日涨幅、相对位置和量价结构排除高位滞涨股。",
+                "invalid_condition": "主线跌出强势区、板块上涨广度恶化，或个股放量跌破近期结构低点。"})
+    for model_name, candidates in strategy_buckets.items():
+        candidates.sort(key=lambda x: (x["score"], x.get("amount") or 0), reverse=True)
+        strategy_models["models"].append({"name": model_name, "status": "观察候选" if candidates else "当前无足够数据生成候选",
+            "candidate_count": len(candidates), "candidates": candidates[:8],
+            "score_note": "规则化代理评分，仅用于排序；不是统计学胜率或买入建议。"})
+
     # Trade review from recorded round trips using FIFO lots; no unrealized P&L is mixed into win rate.
     lots={}; closed=[]
     for t in sorted(trade_history,key=lambda x:x["id"]):
@@ -1194,8 +1294,9 @@ def report():
         "main_board_watchlist": main_board_watchlist,
         "main_board_watchlist_count": len(main_board_watchlist),
         "market_emotion": emotion,
-        "sector_persistence": {"observed_dates": history_dates, "observation_count": len(history_dates), "recorded_today": record_history_today, "warning": "只统计应用实际记录的工作日新鲜快照；节假日仍需人工核对交易日，缺少历史记录不代表板块此前不强。", "industry": persistence_by_type.get("industry", []), "concept": persistence_by_type.get("concept", [])},
+        "sector_persistence": {"observed_dates": history_dates, "observation_count": len(history_dates), "recorded_today": record_history_today, "warning": "只统计应用实际记录的工作日新鲜快照；节假日仍需人工核对交易日，缺少历史记录不代表板块此前不强。持续性评分：单个板块有效观察少于3天时不提供数值评分；3-4天标记为初步观察；5天及以上才作为可评估样本，仍不构成预测保证。", "industry": persistence_by_type.get("industry", []), "concept": persistence_by_type.get("concept", [])},
         "leader_candidates": leader_candidates,
+        "strategy_models": strategy_models,
         "next_day_plan": {"decision": "明日不开新仓" if no_open else "先观察再决定", "rules": ["开盘前复核市场情绪、指数及数据更新时间。", "若出现不开新仓提示，不建立新模拟仓位；只管理已有持仓风险。", "若允许观察，也必须等板块有共振、个股量价确认并设置止损；不在集合竞价盲目追高。", "计划持有约3天仅作为复盘假设，不构成必须持有的要求。"], "no_open": no_open},
         "trade_review": trade_review,
         "sector_scoring_method": {
@@ -1206,7 +1307,9 @@ def report():
             "theme_persistence": "持续性评分需要跨交易日历史数据；目前不以单日快照伪造持续性分数。",
             "theme_grouping": "v16 主线归并采用组内最高单板块评分，避免因相似概念标签较多而抬高分数；它不代表整条主线广度或持续性。",
             "leader_classification": "单日快照只生成情绪强势观察；没有历史K线与可靠成分股映射时，不冒称趋势龙头，也不虚构板块龙二/龙三。",
-            "main_board_filter": "最终观察名单只保留沪市600/601/603/605和深市000/001/002/003代码，并排除ST及退市标记。"
+            "main_board_filter": "最终观察名单只保留沪市600/601/603/605和深市000/001/002/003代码，并排除ST及退市标记。",
+            "v18_strategy_models": "趋势龙头回调、箱体突破、主线低位补涨三类观察模型；数据不足时不冒充形态确认。",
+            "v19_history_and_validation": "扩展每日个股历史字段并兼容升级旧SQLite；三个模型统一要求至少5个实际记录交易日才展示候选，仍不等于完整日K回测。"
         },
         "dragon_analysis_status": {
             "dragon1": "仅在接口提供股票代码且代码属于沪深主板时展示经核验领涨股。",
@@ -1229,6 +1332,27 @@ def report():
             "龙头候选仅为全市场主板快照的量价强势候选；没有可靠板块成分映射时，不把个股冒称某板块龙一、龙二、龙三。"
         ]
     })
+
+@app.get("/api/history-status")
+def history_status():
+    """Report actual persisted daily history coverage; never imply missing dates were backfilled."""
+    with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
+        stock_days = con.execute("SELECT trade_date, COUNT(*) AS rows_count, COUNT(open_price) AS open_rows, COUNT(high_price) AS high_rows, COUNT(low_price) AS low_rows, COUNT(volume) AS volume_rows, COUNT(turnover_rate) AS turnover_rows FROM stock_daily_history GROUP BY trade_date ORDER BY trade_date DESC LIMIT 30").fetchall()
+        total_stocks = con.execute("SELECT COUNT(*) FROM stock_daily_history").fetchone()[0]
+        unique_days = con.execute("SELECT COUNT(DISTINCT trade_date) FROM stock_daily_history").fetchone()[0]
+        sector_days = con.execute("SELECT COUNT(DISTINCT trade_date) FROM sector_daily_history").fetchone()[0]
+    return jsonify({
+        "app_version": APP_VERSION,
+        "database_path": str(DB_PATH),
+        "stock_history_rows": total_stocks,
+        "stock_history_trade_days": unique_days,
+        "sector_history_trade_days": sector_days,
+        "recent_daily_coverage": [dict(r) for r in stock_days],
+        "target": "建议先积累至少20个实际记录交易日；本接口只汇报数据库真实内容，不补造历史。",
+        "persistence_warning": "Render 必须先挂载持久化磁盘，并将 SIM_DB_PATH 设置为该磁盘下的文件路径（例如 /var/data/simulation.db）；否则本地数据库可能在重启/重新部署后丢失。"
+    })
+
 
 @app.get("/api/market-diagnostics")
 def market_diagnostics():
