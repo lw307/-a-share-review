@@ -18,7 +18,7 @@ import math
 import os
 import re
 
-APP_VERSION = "20261021-mainboard-v18"
+APP_VERSION = "20261023-mainboard-v19"
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("SIM_DB_PATH", str(BASE_DIR / "simulation.db")))
@@ -583,8 +583,14 @@ def init_db():
         )""")
         con.execute("""CREATE TABLE IF NOT EXISTS stock_daily_history (
             trade_date TEXT NOT NULL, code TEXT NOT NULL, name TEXT, change_percent REAL,
-            latest_price REAL, amount REAL, PRIMARY KEY(trade_date, code)
+            latest_price REAL, amount REAL, open_price REAL, high_price REAL, low_price REAL,
+            volume REAL, turnover_rate REAL, PRIMARY KEY(trade_date, code)
         )""")
+        # Schema migration for existing Render/SQLite databases; safe to run on every startup.
+        existing_cols = {r[1] for r in con.execute("PRAGMA table_info(stock_daily_history)").fetchall()}
+        for col, typ in (("open_price", "REAL"), ("high_price", "REAL"), ("low_price", "REAL"), ("volume", "REAL"), ("turnover_rate", "REAL")):
+            if col not in existing_cols:
+                con.execute(f"ALTER TABLE stock_daily_history ADD COLUMN {col} {typ}")
         con.execute("""CREATE TABLE IF NOT EXISTS account_equity_history (
             record_date TEXT PRIMARY KEY, equity REAL NOT NULL, cash REAL NOT NULL,
             market_value REAL NOT NULL, profit REAL NOT NULL, return_percent REAL NOT NULL
@@ -829,9 +835,15 @@ def save_daily_research_history(trade_date, industry_rows, concept_rows, stock_r
             price = as_float(stock.get("最新价") or stock.get("最新") or stock.get("现价"))
             amount = as_float(stock.get("成交额") or stock.get("成交金额") or stock.get("amount"))
             if is_main_board_code(code) and name and change is not None:
+                open_price = as_float(stock.get("今开") or stock.get("开盘") or stock.get("open"))
+                high_price = as_float(stock.get("最高") or stock.get("最高价") or stock.get("high"))
+                low_price = as_float(stock.get("最低") or stock.get("最低价") or stock.get("low"))
+                volume = as_float(stock.get("成交量") or stock.get("成交股数") or stock.get("volume"))
+                turnover = as_float(stock.get("换手率") or stock.get("turnover_rate"))
                 con.execute("""INSERT OR REPLACE INTO stock_daily_history
-                    (trade_date, code, name, change_percent, latest_price, amount) VALUES(?,?,?,?,?,?)""",
-                    (trade_date, code, name, change, price, amount))
+                    (trade_date, code, name, change_percent, latest_price, amount, open_price, high_price, low_price, volume, turnover_rate)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (trade_date, code, name, change, price, amount, open_price, high_price, low_price, volume, turnover))
         con.commit()
 
 def load_history(trade_date):
@@ -1155,8 +1167,9 @@ def report():
     strategy_models = {
         "generated_at": now_iso(),
         "data_limitations": [
-            "当前基础历史库主要记录每日涨跌幅、收盘快照价格及成交额，不等同于完整日K线。",
-            "箱体上下沿、真实放量突破、均线支撑、换手率及精确止损价需要可靠历史OHLCV/换手数据；缺失时不作确认。",
+            "v19 开始逐日保存真实行情快照中的开盘、最高、最低、价格、涨跌幅、成交额、成交量和换手率（数据源实际提供什么就保存什么）。",
+            "数据库升级不会补造过去缺失的历史；新历史从程序成功记录的交易日开始累积，历史样本不完整时策略会主动少报或不报。",
+            "快照中的最高/最低可能是盘中值，不应冒充最终日K；箱体突破、均线支撑等确认仍需完整、可靠的日线数据。",
             "候选分数用于同日筛选和复盘，不是盈利概率，也不保证次日上涨。"
         ],
         "models": []
@@ -1178,17 +1191,17 @@ def report():
                   "change_percent": latest_change, "amount": item.get("amount"), "observed_days": observed,
                   "history_changes": changes[-5:], "confirmed_pattern": False,
                   "warning": "仅为快照代理筛选；缺少完整OHLCV/换手及板块成分映射，不能确认形态或直接据此买入。"}
-        if observed >= 3 and pos_days >= 2 and latest_change is not None and -1.5 <= latest_change <= 4.5:
+        if observed >= 5 and pos_days >= 2 and latest_change is not None and -1.5 <= latest_change <= 4.5:
             strategy_buckets["趋势龙头回调"].append({**common, "score": round(trend_score, 1),
                 "reason": f"最近最多5个已记录交易日中上涨{pos_days}天，当前涨幅处于温和区间；仅作为趋势回调观察，尚未核验均线与回调结构。",
                 "entry_condition": "先补齐日K线；价格守住已验证的趋势支撑、回调缩量且再度放量转强后才进一步评估。",
                 "invalid_condition": "跌破经K线确认的前低/趋势支撑，或板块主线明显退潮。"})
-        if latest_change is not None and latest_change >= 3 and item.get("amount"):
+        if observed >= 5 and latest_change is not None and latest_change >= 3 and item.get("amount"):
             strategy_buckets["箱体突破"].append({**common, "score": round(breakout_score, 1),
                 "reason": "当日涨幅与成交额快照较强；没有箱体高点及量能均值，故只列突破待核验，不认定已突破。",
                 "entry_condition": "用至少20日真实日K线确认箱体上沿；收盘有效站上上沿且成交额/量能高于近期均值，再观察回踩承接。",
                 "invalid_condition": "突破后收盘重新跌回箱体，或放量冲高回落且板块同步走弱。"})
-        if latest_change is not None and -1 <= latest_change <= 3 and item.get("amount"):
+        if observed >= 5 and latest_change is not None and -1 <= latest_change <= 3 and item.get("amount"):
             strategy_buckets["主线低位补涨"].append({**common, "score": round(low_follow_score, 1),
                 "reason": "当日涨幅不极端且有成交额数据；因缺少可靠估值/阶段涨幅与板块成分映射，暂不能证明处于低位或具备补涨关系。",
                 "entry_condition": "先确认所属主线仍居强势排名前列，再用多日涨幅、相对位置和量价结构排除高位滞涨股。",
@@ -1272,7 +1285,8 @@ def report():
             "theme_grouping": "v16 主线归并采用组内最高单板块评分，避免因相似概念标签较多而抬高分数；它不代表整条主线广度或持续性。",
             "leader_classification": "单日快照只生成情绪强势观察；没有历史K线与可靠成分股映射时，不冒称趋势龙头，也不虚构板块龙二/龙三。",
             "main_board_filter": "最终观察名单只保留沪市600/601/603/605和深市000/001/002/003代码，并排除ST及退市标记。",
-            "v18_strategy_models": "新增趋势龙头回调、箱体突破、主线低位补涨三类观察模型；基于现有快照历史做保守代理筛选，不冒充完整K线形态确认。"
+            "v18_strategy_models": "趋势龙头回调、箱体突破、主线低位补涨三类观察模型；数据不足时不冒充形态确认。",
+            "v19_history_and_validation": "扩展每日个股历史字段并兼容升级旧SQLite；三个模型统一要求至少5个实际记录交易日才展示候选，仍不等于完整日K回测。"
         },
         "dragon_analysis_status": {
             "dragon1": "仅在接口提供股票代码且代码属于沪深主板时展示经核验领涨股。",
@@ -1295,6 +1309,27 @@ def report():
             "龙头候选仅为全市场主板快照的量价强势候选；没有可靠板块成分映射时，不把个股冒称某板块龙一、龙二、龙三。"
         ]
     })
+
+@app.get("/api/history-status")
+def history_status():
+    """Report actual persisted daily history coverage; never imply missing dates were backfilled."""
+    with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
+        stock_days = con.execute("SELECT trade_date, COUNT(*) AS rows_count, COUNT(open_price) AS open_rows, COUNT(high_price) AS high_rows, COUNT(low_price) AS low_rows, COUNT(volume) AS volume_rows, COUNT(turnover_rate) AS turnover_rows FROM stock_daily_history GROUP BY trade_date ORDER BY trade_date DESC LIMIT 30").fetchall()
+        total_stocks = con.execute("SELECT COUNT(*) FROM stock_daily_history").fetchone()[0]
+        unique_days = con.execute("SELECT COUNT(DISTINCT trade_date) FROM stock_daily_history").fetchone()[0]
+        sector_days = con.execute("SELECT COUNT(DISTINCT trade_date) FROM sector_daily_history").fetchone()[0]
+    return jsonify({
+        "app_version": APP_VERSION,
+        "database_path": str(DB_PATH),
+        "stock_history_rows": total_stocks,
+        "stock_history_trade_days": unique_days,
+        "sector_history_trade_days": sector_days,
+        "recent_daily_coverage": [dict(r) for r in stock_days],
+        "target": "建议先积累至少20个实际记录交易日；本接口只汇报数据库真实内容，不补造历史。",
+        "persistence_warning": "若部署平台重启会清空本地数据库，必须将 SIM_DB_PATH 指向持久化磁盘路径，否则历史和模拟交易可能丢失。"
+    })
+
 
 @app.get("/api/market-diagnostics")
 def market_diagnostics():
